@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../stores/appStore";
+import { notifyPeersOfNewAgent } from "../lib/agentManager";
 
 const BROKER_WS_URL = "ws://127.0.0.1:7899/ws";
 const RECONNECT_INTERVAL = 3000;
@@ -46,6 +47,15 @@ export function useWebSocket() {
               if (agent) {
                 updateAgentPeerId(agent.id, peer.id);
                 updateAgentStatus(agent.id, "active");
+
+                // Notify existing agents in the same node about the new peer
+                if (peer.node_id) {
+                  notifyPeersOfNewAgent(
+                    peer.node_id,
+                    agent.name,
+                    peer.id
+                  ).catch(() => {});
+                }
               }
               setBrokerStatus({
                 peerCount: useAppStore.getState().broker.peerCount + 1,

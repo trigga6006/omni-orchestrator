@@ -57,12 +57,27 @@ export async function assignNode(peerId: string, nodeId: string | null): Promise
 
 // ---- Messaging ----
 
+export interface BrokerMessage {
+  id: number;
+  from_id: string;
+  to_id: string;
+  text: string;
+  sent_at: string;
+  delivered: boolean;
+}
+
 export async function sendMessage(
   fromId: string,
   toId: string,
   text: string
 ): Promise<{ ok: boolean; error?: string }> {
   return post("/send-message", { from_id: fromId, to_id: toId, text });
+}
+
+export async function pollMessages(
+  peerId: string
+): Promise<{ messages: BrokerMessage[] }> {
+  return post("/poll-messages", { id: peerId });
 }
 
 export async function broadcastToNode(

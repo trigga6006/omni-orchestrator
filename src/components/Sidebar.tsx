@@ -28,6 +28,7 @@ export default function Sidebar() {
   const [showNewAgent, setShowNewAgent] = useState<string | null>(null);
   const [newAgentName, setNewAgentName] = useState("");
   const [newAgentCwd, setNewAgentCwd] = useState("");
+  const [newAgentTask, setNewAgentTask] = useState("");
 
   const handleCreateNode = () => {
     if (!newNodeName.trim()) return;
@@ -41,19 +42,19 @@ export default function Sidebar() {
     if (!newAgentName.trim()) return;
     const cwd = newAgentCwd.trim() || ".";
     const name = newAgentName.trim();
+    const task = newAgentTask.trim() || undefined;
     const agent = addAgent(nodeId, name, cwd);
     setNewAgentName("");
     setNewAgentCwd("");
+    setNewAgentTask("");
     setShowNewAgent(null);
     selectAgent(agent.id);
 
-    // Spawn the actual Claude Code process
+    // Spawn the persistent Claude Code process
     try {
-      await spawnAgent(agent.id, nodeId, name, cwd);
+      await spawnAgent(agent.id, nodeId, name, cwd, task);
     } catch (err) {
       console.error("Failed to spawn agent:", err);
-      // Agent is already in the store with "starting" status,
-      // agentManager will set it to "error" on failure
     }
   };
 
@@ -194,12 +195,22 @@ export default function Sidebar() {
                         type="text"
                         value={newAgentCwd}
                         onChange={(e) => setNewAgentCwd(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleCreateAgent(node.id);
-                          if (e.key === "Escape") setShowNewAgent(null);
-                        }}
                         placeholder="Working directory..."
                         className="w-full px-2 py-1 mt-1 text-xs bg-bg-primary border border-border-default rounded text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
+                      />
+                      <textarea
+                        value={newAgentTask}
+                        onChange={(e) => setNewAgentTask(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            handleCreateAgent(node.id);
+                          }
+                          if (e.key === "Escape") setShowNewAgent(null);
+                        }}
+                        placeholder="Task description (optional)..."
+                        rows={2}
+                        className="w-full px-2 py-1 mt-1 text-xs bg-bg-primary border border-border-default rounded text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50 resize-none"
                       />
                       <div className="flex gap-1.5 mt-1.5">
                         <button

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useAppStore } from "../stores/appStore";
-import { sendMessage as brokerSendMessage, routeMessage } from "../lib/broker";
+import { sendMessage as brokerSendMessage } from "../lib/broker";
 import { writeToAgent } from "../lib/agentManager";
 import DiffViewer from "./DiffViewer";
 import type { AgentStatus } from "../types";
@@ -137,15 +137,14 @@ function ChatView({ agentId }: { agentId: string }) {
     addAgentMessage(agent.id, outMsg);
 
     try {
-      // Strategy 1: If agent has a peerId, send via broker
-      if (agent.peerId) {
+      // Primary: Write directly to the agent's stdin (interactive session)
+      const written = await writeToAgent(agent.id, text);
+
+      // Backup: If stdin write failed but agent has a peerId,
+      // send via broker so the poll loop picks it up
+      if (!written && agent.peerId) {
         await brokerSendMessage("user", agent.peerId, text);
       }
-
-      // Strategy 2: Also write directly to the agent's stdin
-      // This ensures the Claude session gets the message even if
-      // broker message polling isn't set up in the agent
-      await writeToAgent(agent.id, text);
     } catch (err) {
       console.error("Failed to send message:", err);
       // Message was already added to UI, add error indicator
