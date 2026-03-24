@@ -1,0 +1,64 @@
+import { useWebSocket } from "./hooks/useWebSocket";
+import { useAppStore } from "./stores/appStore";
+import Scene3D from "./components/Scene3D";
+import TitleBar from "./components/TitleBar";
+import Sidebar from "./components/Sidebar";
+import AgentPanel from "./components/AgentPanel";
+
+export default function App() {
+  useWebSocket();
+
+  const sidebarOpen = useAppStore((s) => s.sidebarOpen);
+  const selectedAgentId = useAppStore((s) => s.selectedAgentId);
+
+  return (
+    <div className="w-full h-full flex flex-col bg-bg-primary">
+      <TitleBar />
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Sidebar */}
+        {sidebarOpen && <Sidebar />}
+
+        {/* 3D Canvas */}
+        <div className="flex-1 relative">
+          <Scene3D />
+
+          {/* Bottom status bar */}
+          <StatusBar />
+        </div>
+
+        {/* Agent detail panel */}
+        {selectedAgentId && <AgentPanel />}
+      </div>
+    </div>
+  );
+}
+
+function StatusBar() {
+  const broker = useAppStore((s) => s.broker);
+  const agents = useAppStore((s) => s.agents);
+  const nodes = useAppStore((s) => s.nodes);
+
+  return (
+    <div className="absolute bottom-0 left-0 right-0 h-7 glass flex items-center px-3 gap-4 text-xs z-10">
+      <div className="flex items-center gap-1.5">
+        <div
+          className={`w-1.5 h-1.5 rounded-full ${
+            broker.connected ? "bg-accent-emerald" : "bg-accent-red"
+          }`}
+        />
+        <span className="text-text-muted">
+          {broker.connected ? "Broker connected" : "Broker disconnected"}
+        </span>
+      </div>
+      <span className="text-text-muted">
+        {nodes.length} node{nodes.length !== 1 ? "s" : ""}
+      </span>
+      <span className="text-text-muted">
+        {agents.length} agent{agents.length !== 1 ? "s" : ""}
+      </span>
+      <span className="text-text-muted">
+        {agents.filter((a) => a.status === "active").length} active
+      </span>
+    </div>
+  );
+}
