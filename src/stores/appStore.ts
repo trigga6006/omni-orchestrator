@@ -35,6 +35,8 @@ interface AppState {
   selectedAgentId: string | null;
   showDiffFor: string | null; // agent ID to show diff panel
   sidebarOpen: boolean;
+  sidebarView: "nodes" | "activity";
+  rightDrawerOpen: boolean;
   panelView: "chat" | "diff" | "info";
 
   // Actions - Nodes
@@ -72,6 +74,9 @@ interface AppState {
   selectAgent: (id: string | null) => void;
   toggleDiff: (agentId: string | null) => void;
   toggleSidebar: () => void;
+  setSidebarView: (view: "nodes" | "activity") => void;
+  toggleRightDrawer: () => void;
+  openRightDrawer: () => void;
   setPanelView: (view: "chat" | "diff" | "info") => void;
   setBrokerStatus: (status: Partial<BrokerStatus>) => void;
 }
@@ -109,6 +114,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedAgentId: null,
   showDiffFor: null,
   sidebarOpen: true,
+  sidebarView: "nodes",
+  rightDrawerOpen: false,
   panelView: "chat",
   activityLog: [],
   activityFeedOpen: false,
@@ -335,11 +342,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
   },
 
-  selectNode: (id) => set({ selectedNodeId: id, selectedAgentId: null }),
+  selectNode: (id) => set({ selectedNodeId: id, selectedAgentId: null, rightDrawerOpen: !!id }),
   selectAgent: (id) => {
     if (id) {
       const agent = get().agents.find((a) => a.id === id);
-      set({ selectedAgentId: id, selectedNodeId: agent?.nodeId ?? get().selectedNodeId });
+      set({ selectedAgentId: id, selectedNodeId: agent?.nodeId ?? get().selectedNodeId, rightDrawerOpen: true });
     } else {
       set({ selectedAgentId: null });
     }
@@ -350,6 +357,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       panelView: "diff",
     })),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  setSidebarView: (view) => set({ sidebarView: view }),
+  toggleRightDrawer: () => set((s) => ({ rightDrawerOpen: !s.rightDrawerOpen })),
+  openRightDrawer: () => set({ rightDrawerOpen: true }),
   setPanelView: (view) => set({ panelView: view }),
   setBrokerStatus: (status) =>
     set((s) => ({ broker: { ...s.broker, ...status } })),
