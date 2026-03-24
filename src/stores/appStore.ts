@@ -7,6 +7,7 @@ import type {
   BrokerStatus,
   AgentMessage,
   DiffEntry,
+  CrossSpeakLink,
 } from "../types";
 
 const NODE_COLORS = [
@@ -25,6 +26,7 @@ interface AppState {
   nodes: SwarmNode[];
   agents: Agent[];
   connections: ConnectionEdge[];
+  crossSpeakLinks: CrossSpeakLink[];
   broker: BrokerStatus;
 
   // UI state
@@ -35,9 +37,14 @@ interface AppState {
   panelView: "chat" | "diff" | "info";
 
   // Actions - Nodes
-  createNode: (name: string) => SwarmNode;
+  createNode: (name: string, directory: string) => SwarmNode;
   removeNode: (id: string) => void;
   updateNodePosition: (id: string, pos: [number, number, number]) => void;
+
+  // Actions - Cross-speak
+  addCrossSpeakLink: (nodeA: string, nodeB: string) => void;
+  removeCrossSpeakLink: (linkId: string) => void;
+  canNodesCommunicate: (nodeIdA: string, nodeIdB: string) => boolean;
 
   // Actions - Agents
   addAgent: (nodeId: string, name: string, cwd: string) => Agent;
@@ -45,8 +52,10 @@ interface AppState {
   updateAgentStatus: (id: string, status: AgentStatus) => void;
   updateAgentSummary: (id: string, summary: string) => void;
   updateAgentPeerId: (id: string, peerId: string) => void;
+  updateAgentPid: (id: string, pid: number) => void;
   addAgentMessage: (agentId: string, message: AgentMessage) => void;
   setAgentDiff: (agentId: string, diff: DiffEntry | null) => void;
+  setAgentDiffs: (agentId: string, diffs: DiffEntry[]) => void;
 
   // Actions - Connections
   addConnection: (from: string, to: string) => void;
@@ -66,6 +75,11 @@ function genId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
+/** Normalize a directory path for comparison (lowercase, trim trailing slashes). */
+function normalizePath(p: string): string {
+  return p.replace(/[\\/]+$/, "").toLowerCase();
+}
+
 // Arrange nodes in a circle
 function getNodePosition(index: number, total: number): [number, number, number] {
   const radius = Math.max(6, total * 2.5);
@@ -81,6 +95,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   nodes: [],
   agents: [],
   connections: [],
+  crossSpeakLinks: [],
   broker: { connected: false, peerCount: 0, nodeCount: 0, url: "ws://127.0.0.1:7899" },
 
   selectedNodeId: null,
@@ -89,11 +104,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   sidebarOpen: true,
   panelView: "chat",
 
-  createNode: (name) => {
+  createNode: (name, directory) => {
     const state = get();
     const node: SwarmNode = {
       id: genId(),
       name,
+      directory,
       color: NODE_COLORS[colorIndex++ % NODE_COLORS.length],
       position: getNodePosition(state.nodes.length, state.nodes.length + 1),
       agents: [],
@@ -107,6 +123,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({
       nodes: s.nodes.filter((n) => n.id !== id),
       agents: s.agents.filter((a) => a.nodeId !== id),
+      crossSpeakLinks: s.crossSpeakLinks.filter(
+        (l) => l.nodeA !== id && l.nodeB !== id
+      ),
       selectedNodeId: s.selectedNodeId === id ? null : s.selectedNodeId,
     })),
 
@@ -127,6 +146,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       pid: null,
       messages: [],
       diff: null,
+      diffs: [],
       createdAt: new Date().toISOString(),
       lastSeen: new Date().toISOString(),
     };
@@ -164,6 +184,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       agents: s.agents.map((a) => (a.id === id ? { ...a, peerId } : a)),
     })),
 
+  updateAgentPid: (id, pid) =>
+    set((s) => ({
+      agents: s.agents.map((a) => (a.id === id ? { ...a, pid } : a)),
+    })),
+
   addAgentMessage: (agentId, message) =>
     set((s) => ({
       agents: s.agents.map((a) =>
@@ -176,6 +201,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAgentDiff: (agentId, diff) =>
     set((s) => ({
       agents: s.agents.map((a) => (a.id === agentId ? { ...a, diff } : a)),
+    })),
+
+  setAgentDiffs: (agentId, diffs) =>
+    set((s) => ({
+      agents: s.agents.map((a) =>
+        a.id === agentId
+          ? { ...a, diffs, diff: diffs.length > 0 ? diffs[0] : null }
+          : a
+      ),
     })),
 
   addConnection: (from, to) =>
@@ -199,6 +233,46 @@ export const useAppStore = create<AppState>((set, get) => ({
         ],
       };
     }),
+
+  addCrossSpeakLink: (nodeA, nodeB) =>
+    set((s) => {
+      const exists = s.crossSpeakLinks.some(
+        (l) =>
+          (l.nodeA === nodeA && l.nodeB === nodeB) ||
+          (l.nodeA === nodeB && l.nodeB === nodeA)
+      );
+      if (exists) return s;
+      return {
+        crossSpeakLinks: [
+          ...s.crossSpeakLinks,
+          { id: genId(), nodeA, nodeB, createdAt: new Date().toISOString() },
+        ],
+      };
+    }),
+
+  removeCrossSpeakLink: (linkId) =>
+    set((s) => ({
+      crossSpeakLinks: s.crossSpeakLinks.filter((l) => l.id !== linkId),
+    })),
+
+  canNodesCommunicate: (nodeIdA, nodeIdB) => {
+    if (nodeIdA === nodeIdB) return true;
+    const state = get();
+    const nodeA = state.nodes.find((n) => n.id === nodeIdA);
+    const nodeB = state.nodes.find((n) => n.id === nodeIdB);
+    if (!nodeA || !nodeB) return false;
+
+    // Same directory = auto-communicate
+    if (normalizePath(nodeA.directory) === normalizePath(nodeB.directory))
+      return true;
+
+    // Explicit cross-speak link
+    return state.crossSpeakLinks.some(
+      (l) =>
+        (l.nodeA === nodeIdA && l.nodeB === nodeIdB) ||
+        (l.nodeA === nodeIdB && l.nodeB === nodeA.id)
+    );
+  },
 
   selectNode: (id) => set({ selectedNodeId: id, selectedAgentId: null }),
   selectAgent: (id) => set({ selectedAgentId: id }),

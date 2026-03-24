@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useAppStore } from "../stores/appStore";
+import { sendMessage as brokerSendMessage } from "../lib/broker";
+import { writeToAgent } from "../lib/agentManager";
 import DiffViewer from "./DiffViewer";
 import type { AgentStatus } from "../types";
 
@@ -88,7 +90,11 @@ export default function AgentPanel() {
       {/* Footer actions */}
       <div className="px-4 py-2 border-t border-border-subtle flex gap-2">
         <button
-          onClick={() => removeAgent(agent.id)}
+          onClick={async () => {
+            const { killAgent } = await import("../lib/agentManager");
+            await killAgent(agent.id);
+            removeAgent(agent.id);
+          }}
           className="px-3 py-1.5 text-xs rounded-md text-accent-red hover:bg-accent-red/10 transition-colors"
         >
           Kill Agent
@@ -100,9 +106,60 @@ export default function AgentPanel() {
 
 function ChatView({ agentId }: { agentId: string }) {
   const agent = useAppStore((s) => s.agents.find((a) => a.id === agentId));
+  const addAgentMessage = useAppStore((s) => s.addAgentMessage);
   const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [agent?.messages.length]);
 
   if (!agent) return null;
+
+  const handleSend = async () => {
+    const text = message.trim();
+    if (!text || sending) return;
+
+    setSending(true);
+    setMessage("");
+
+    // Add the outbound message to local state immediately
+    const outMsg = {
+      id: Math.random().toString(36).slice(2),
+      fromId: "user",
+      toId: agent.peerId ?? agent.id,
+      text,
+      sentAt: new Date().toISOString(),
+      direction: "outbound" as const,
+    };
+    addAgentMessage(agent.id, outMsg);
+
+    try {
+      // Primary: Write directly to the agent's stdin (interactive session)
+      const written = await writeToAgent(agent.id, text);
+
+      // Backup: If stdin write failed but agent has a peerId,
+      // send via broker so the poll loop picks it up
+      if (!written && agent.peerId) {
+        await brokerSendMessage("user", agent.peerId, text);
+      }
+    } catch (err) {
+      console.error("Failed to send message:", err);
+      // Message was already added to UI, add error indicator
+      addAgentMessage(agent.id, {
+        id: Math.random().toString(36).slice(2),
+        fromId: "system",
+        toId: agent.id,
+        text: "Failed to deliver message. Agent may not be running.",
+        sentAt: new Date().toISOString(),
+        direction: "inbound",
+      });
+    } finally {
+      setSending(false);
+    }
+  };
 
   return (
     <div className="h-full flex flex-col">
@@ -115,27 +172,32 @@ function ChatView({ agentId }: { agentId: string }) {
             </p>
           </div>
         ) : (
-          agent.messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`flex flex-col ${
-                msg.direction === "outbound" ? "items-end" : "items-start"
-              }`}
-            >
+          <>
+            {agent.messages.map((msg) => (
               <div
-                className={`max-w-[85%] px-3 py-2 rounded-lg text-xs ${
-                  msg.direction === "outbound"
-                    ? "bg-accent-cyan/15 text-text-primary"
-                    : "bg-bg-elevated text-text-primary"
+                key={msg.id}
+                className={`flex flex-col ${
+                  msg.direction === "outbound" ? "items-end" : "items-start"
                 }`}
               >
-                {msg.text}
+                <div
+                  className={`max-w-[85%] px-3 py-2 rounded-lg text-xs whitespace-pre-wrap ${
+                    msg.direction === "outbound"
+                      ? "bg-accent-cyan/15 text-text-primary"
+                      : msg.fromId === "system"
+                        ? "bg-accent-amber/10 text-accent-amber"
+                        : "bg-bg-elevated text-text-primary"
+                  }`}
+                >
+                  {msg.text}
+                </div>
+                <span className="text-[10px] text-text-muted mt-0.5 px-1">
+                  {new Date(msg.sentAt).toLocaleTimeString()}
+                </span>
               </div>
-              <span className="text-[10px] text-text-muted mt-0.5 px-1">
-                {new Date(msg.sentAt).toLocaleTimeString()}
-              </span>
-            </div>
-          ))
+            ))}
+            <div ref={messagesEndRef} />
+          </>
         )}
       </div>
 
@@ -147,16 +209,25 @@ function ChatView({ agentId }: { agentId: string }) {
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && message.trim()) {
-                // TODO: Send via broker
-                setMessage("");
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
               }
             }}
-            placeholder="Send message to agent..."
-            className="flex-1 px-3 py-2 text-xs bg-bg-primary border border-border-default rounded-lg text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
+            placeholder={
+              agent.status === "active"
+                ? "Send message to agent..."
+                : `Agent is ${agent.status}...`
+            }
+            disabled={sending}
+            className="flex-1 px-3 py-2 text-xs bg-bg-primary border border-border-default rounded-lg text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50 disabled:opacity-50"
           />
-          <button className="px-3 py-2 text-xs rounded-lg bg-accent-cyan/15 text-accent-cyan hover:bg-accent-cyan/25 transition-colors">
-            Send
+          <button
+            onClick={handleSend}
+            disabled={sending || !message.trim()}
+            className="px-3 py-2 text-xs rounded-lg bg-accent-cyan/15 text-accent-cyan hover:bg-accent-cyan/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {sending ? "..." : "Send"}
           </button>
         </div>
       </div>
@@ -166,8 +237,12 @@ function ChatView({ agentId }: { agentId: string }) {
 
 function DiffView({ agentId }: { agentId: string }) {
   const agent = useAppStore((s) => s.agents.find((a) => a.id === agentId));
+  const [selectedFileIdx, setSelectedFileIdx] = useState(0);
 
-  if (!agent?.diff) {
+  const diffs = agent?.diffs ?? [];
+  const activeDiff = diffs[selectedFileIdx] ?? agent?.diff;
+
+  if (!activeDiff) {
     return (
       <div className="h-full flex items-center justify-center px-4">
         <div className="text-center">
@@ -182,20 +257,42 @@ function DiffView({ agentId }: { agentId: string }) {
 
   return (
     <div className="h-full flex flex-col">
+      {/* File list (if multiple) */}
+      {diffs.length > 1 && (
+        <div className="px-2 py-1.5 border-b border-border-subtle flex gap-1 overflow-x-auto">
+          {diffs.map((d, i) => (
+            <button
+              key={d.fileName}
+              onClick={() => setSelectedFileIdx(i)}
+              className={`px-2 py-1 text-[10px] font-mono rounded whitespace-nowrap transition-colors ${
+                i === selectedFileIdx
+                  ? "bg-accent-cyan/15 text-accent-cyan"
+                  : "text-text-muted hover:text-text-secondary hover:bg-bg-hover"
+              }`}
+            >
+              {d.fileName.split("/").pop()}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Active diff header */}
       <div className="px-4 py-2 border-b border-border-subtle flex items-center gap-2">
         <span className="text-xs text-text-secondary font-mono">
-          {agent.diff.fileName}
+          {activeDiff.fileName}
         </span>
         <span className="text-[10px] text-text-muted">
-          {new Date(agent.diff.timestamp).toLocaleTimeString()}
+          {new Date(activeDiff.timestamp).toLocaleTimeString()}
         </span>
       </div>
+
+      {/* Diff editor */}
       <div className="flex-1 overflow-hidden">
         <DiffViewer
-          original={agent.diff.original}
-          modified={agent.diff.modified}
-          language={agent.diff.language}
-          fileName={agent.diff.fileName}
+          original={activeDiff.original}
+          modified={activeDiff.modified}
+          language={activeDiff.language}
+          fileName={activeDiff.fileName}
         />
       </div>
     </div>
