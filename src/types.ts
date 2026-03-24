@@ -3,9 +3,17 @@ export type AgentStatus = "starting" | "active" | "idle" | "error" | "stopped";
 export interface SwarmNode {
   id: string;
   name: string;
+  directory: string; // required project directory for this node
   color: string;
   position: [number, number, number];
   agents: string[]; // agent IDs
+  createdAt: string;
+}
+
+export interface CrossSpeakLink {
+  id: string;
+  nodeA: string; // node ID
+  nodeB: string; // node ID
   createdAt: string;
 }
 

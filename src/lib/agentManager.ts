@@ -43,23 +43,43 @@ const runningAgents = new Map<string, RunningAgent>();
 function buildSystemPrompt(name: string, cwd: string, nodeId: string): string {
   const store = useAppStore.getState();
   const node = store.nodes.find((n) => n.id === nodeId);
-  const nodeAgents = store.agents.filter(
-    (a) => a.nodeId === nodeId && a.status === "active"
+
+  // Collect all reachable agents: same node + same-directory nodes + cross-speak linked nodes
+  const reachableNodeIds = new Set<string>([nodeId]);
+  for (const otherNode of store.nodes) {
+    if (otherNode.id === nodeId) continue;
+    if (store.canNodesCommunicate(nodeId, otherNode.id)) {
+      reachableNodeIds.add(otherNode.id);
+    }
+  }
+
+  const reachableAgents = store.agents.filter(
+    (a) => reachableNodeIds.has(a.nodeId) && a.status === "active"
   );
 
-  const peerList =
-    nodeAgents.length > 0
-      ? nodeAgents
-          .map((a) => `  - "${a.name}" (peer: ${a.peerId ?? "registering..."})`)
-          .join("\n")
-      : "  (no other agents yet)";
+  // Build peer list grouped by node
+  let peerList = "";
+  for (const nid of reachableNodeIds) {
+    const n = store.nodes.find((nd) => nd.id === nid);
+    const agentsInNode = reachableAgents.filter((a) => a.nodeId === nid);
+    if (agentsInNode.length === 0 && nid !== nodeId) continue;
+
+    const label = nid === nodeId ? `${n?.name ?? "unknown"} (your node)` : `${n?.name ?? "unknown"} (linked)`;
+    peerList += `\n### ${label}\n`;
+    if (agentsInNode.length === 0) {
+      peerList += "  (no other agents yet)\n";
+    } else {
+      for (const a of agentsInNode) {
+        peerList += `  - "${a.name}" (peer: ${a.peerId ?? "registering..."})\n`;
+      }
+    }
+  }
 
   return `You are agent "${name}" working in ${cwd}.
 You are part of a multi-agent swarm in the "${node?.name ?? "unknown"}" node, coordinated by a central broker.
 
-## Peer Agents in Your Node
+## Reachable Peer Agents
 ${peerList}
-
 ## Communication Protocol
 - To send a message to another agent, start your response line with: @agent-name: your message
   Example: @frontend-fix: Can you check if the navbar component renders correctly?
@@ -67,6 +87,7 @@ ${peerList}
   [From "Agent Name"]: their message
 - You can address multiple agents in one response using multiple @agent-name: lines.
 - Messages without an @agent-name: prefix are shown to the user.
+- You can only communicate with agents listed above. Agents in unrelated projects are isolated.
 
 ## Guidelines
 - Focus on your assigned task and coordinate with peers when needed.
@@ -267,6 +288,7 @@ function routePeerMessage(
   text: string
 ): boolean {
   const store = useAppStore.getState();
+  const fromAgent = store.agents.find((a) => a.id === fromAgentId);
 
   // Find the target agent by name (case-insensitive)
   const targetAgent = store.agents.find(
@@ -279,6 +301,20 @@ function routePeerMessage(
       `[routing] Could not find active agent "${targetName}" to deliver message`
     );
     return false;
+  }
+
+  // Check communication boundaries: nodes must be allowed to communicate
+  if (fromAgent && fromAgent.nodeId !== targetAgent.nodeId) {
+    const canCommunicate = store.canNodesCommunicate(
+      fromAgent.nodeId,
+      targetAgent.nodeId
+    );
+    if (!canCommunicate) {
+      console.warn(
+        `[routing] Agent "${fromAgent.name}" (node ${fromAgent.nodeId}) cannot communicate with "${targetAgent.name}" (node ${targetAgent.nodeId}) — different directories with no cross-speak link`
+      );
+      return false;
+    }
   }
 
   // Send through broker
@@ -350,14 +386,20 @@ export async function notifyPeersOfNewAgent(
   newPeerId: string
 ): Promise<void> {
   const store = useAppStore.getState();
-  const nodeAgents = store.agents.filter(
-    (a) => a.nodeId === nodeId && a.peerId && a.peerId !== newPeerId
+
+  // Notify all agents in reachable nodes (same node, same directory, or cross-speak linked)
+  const reachableAgents = store.agents.filter(
+    (a) =>
+      a.peerId &&
+      a.peerId !== newPeerId &&
+      store.canNodesCommunicate(nodeId, a.nodeId)
   );
 
-  for (const agent of nodeAgents) {
+  for (const agent of reachableAgents) {
     const entry = runningAgents.get(agent.id);
     if (entry?.child && entry.sessionReady) {
-      const msg = `[System]: New agent "${newAgentName}" (peer: ${newPeerId}) has joined your node. You can communicate with them using @${newAgentName}: your message`;
+      const location = agent.nodeId === nodeId ? "your node" : "a linked node";
+      const msg = `[System]: New agent "${newAgentName}" (peer: ${newPeerId}) has joined ${location}. You can communicate with them using @${newAgentName}: your message`;
       await writeToAgent(agent.id, msg).catch(() => {});
     }
   }
