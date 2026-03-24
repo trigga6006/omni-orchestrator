@@ -63,3 +63,14 @@ export interface ConnectionEdge {
   active: boolean;
   lastMessageAt: string;
 }
+
+export interface ActivityEvent {
+  id: string;
+  type: "message" | "agent_spawn" | "agent_stop" | "diff" | "system" | "cross_speak";
+  agentId?: string;
+  agentName?: string;
+  nodeId?: string;
+  nodeName?: string;
+  text: string;
+  timestamp: string;
+}

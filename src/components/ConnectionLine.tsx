@@ -1,5 +1,6 @@
-import { useRef, useMemo, useEffect } from "react";
+import { useRef, useMemo, useEffect, useState } from "react";
 import { useFrame } from "@react-three/fiber";
+import { Html } from "@react-three/drei";
 import * as THREE from "three";
 
 interface Props {
@@ -7,11 +8,25 @@ interface Props {
   to: [number, number, number];
   color: string;
   active: boolean;
+  fromName?: string;
+  toName?: string;
+  lastMessage?: string;
+  lastMessageAt?: string;
 }
 
-export default function ConnectionLine({ from, to, color, active }: Props) {
+export default function ConnectionLine({
+  from,
+  to,
+  color,
+  active,
+  fromName,
+  toName,
+  lastMessage,
+  lastMessageAt,
+}: Props) {
   const lineRef = useRef<THREE.Line | null>(null);
   const dashOffsetVal = useRef(0);
+  const [hovered, setHovered] = useState(false);
 
   const curve = useMemo(() => {
     const mid: [number, number, number] = [
@@ -25,6 +40,8 @@ export default function ConnectionLine({ from, to, color, active }: Props) {
       new THREE.Vector3(...to)
     );
   }, [from[0], from[1], from[2], to[0], to[1], to[2]]);
+
+  const midPoint = useMemo(() => curve.getPoint(0.5), [curve]);
 
   const geometry = useMemo(() => {
     const points = curve.getPoints(40);
@@ -41,10 +58,19 @@ export default function ConnectionLine({ from, to, color, active }: Props) {
     [color, active]
   );
 
+  // Invisible tube for hover detection
+  const tubeGeo = useMemo(
+    () => new THREE.TubeGeometry(curve, 20, 0.15, 8, false),
+    [curve]
+  );
+
   useFrame(() => {
     if (lineRef.current && active) {
       dashOffsetVal.current -= 0.02;
       material.opacity = 0.4 + Math.sin(dashOffsetVal.current * 5) * 0.2;
+    }
+    if (lineRef.current && hovered) {
+      material.opacity = 0.8;
     }
   });
 
@@ -63,5 +89,51 @@ export default function ConnectionLine({ from, to, color, active }: Props) {
     };
   }, [geometry, material]);
 
-  return <group ref={groupRef} />;
+  return (
+    <group ref={groupRef}>
+      {/* Invisible tube for raycast detection */}
+      <mesh
+        geometry={tubeGeo}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          setHovered(true);
+          document.body.style.cursor = "pointer";
+        }}
+        onPointerOut={() => {
+          setHovered(false);
+          document.body.style.cursor = "default";
+        }}
+        visible={false}
+      >
+        <meshBasicMaterial transparent opacity={0} />
+      </mesh>
+
+      {/* Hover tooltip */}
+      {hovered && (fromName || toName) && (
+        <Html
+          position={[midPoint.x, midPoint.y + 0.4, midPoint.z]}
+          center
+          style={{ pointerEvents: "none" }}
+        >
+          <div className="glass-strong rounded-lg px-3 py-2 text-[11px] whitespace-nowrap min-w-[140px]">
+            <div className="flex items-center gap-1.5 text-text-primary font-medium">
+              <span>{fromName ?? "?"}</span>
+              <span className="text-accent-cyan">-&gt;</span>
+              <span>{toName ?? "?"}</span>
+            </div>
+            {lastMessage && (
+              <div className="mt-1 text-text-secondary max-w-[240px] truncate">
+                {lastMessage}
+              </div>
+            )}
+            {lastMessageAt && (
+              <div className="mt-0.5 text-text-muted text-[10px]">
+                {new Date(lastMessageAt).toLocaleTimeString()}
+              </div>
+            )}
+          </div>
+        </Html>
+      )}
+    </group>
+  );
 }

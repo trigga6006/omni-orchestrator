@@ -1,14 +1,35 @@
+import { useMemo } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Stars, Text, Line } from "@react-three/drei";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import { useAppStore } from "../stores/appStore";
 import NodePlatform from "./NodePlatform";
 import ConnectionLine from "./ConnectionLine";
+import NodeLink from "./NodeLink";
 
 export default function Scene3D() {
   const nodes = useAppStore((s) => s.nodes);
   const agents = useAppStore((s) => s.agents);
   const connections = useAppStore((s) => s.connections);
+  const crossSpeakLinks = useAppStore((s) => s.crossSpeakLinks);
+
+  // Compute same-directory auto-links between node pairs
+  const autoLinks = useMemo(() => {
+    const links: { from: string; to: string }[] = [];
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i];
+        const b = nodes[j];
+        if (
+          a.directory.replace(/[\\/]+$/, "").toLowerCase() ===
+          b.directory.replace(/[\\/]+$/, "").toLowerCase()
+        ) {
+          links.push({ from: a.id, to: b.id });
+        }
+      }
+    }
+    return links;
+  }, [nodes]);
 
   return (
     <Canvas
@@ -40,7 +61,7 @@ export default function Scene3D() {
       })}
 
       {/* Connection lines between agents */}
-      {connections.map((conn, i) => {
+      {connections.map((conn) => {
         const fromAgent = agents.find((a) => a.id === conn.from);
         const toAgent = agents.find((a) => a.id === conn.to);
         if (!fromAgent || !toAgent) return null;
@@ -49,6 +70,17 @@ export default function Scene3D() {
         const toNode = nodes.find((n) => n.id === toAgent.nodeId);
         if (!fromNode || !toNode) return null;
 
+        // Find the last message between these two agents
+        const lastMsg = [...fromAgent.messages, ...toAgent.messages]
+          .filter(
+            (m) =>
+              (m.fromId === fromAgent.peerId && m.toId === toAgent.peerId) ||
+              (m.fromId === toAgent.peerId && m.toId === fromAgent.peerId) ||
+              m.text.includes(toAgent.name) ||
+              m.text.includes(fromAgent.name)
+          )
+          .sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0];
+
         return (
           <ConnectionLine
             key={`${conn.from}-${conn.to}`}
@@ -56,6 +88,42 @@ export default function Scene3D() {
             to={toNode.position}
             color="#06b6d4"
             active={conn.active}
+            fromName={fromAgent.name}
+            toName={toAgent.name}
+            lastMessage={lastMsg?.text.slice(0, 100)}
+            lastMessageAt={conn.lastMessageAt}
+          />
+        );
+      })}
+
+      {/* Same-directory auto-links (solid emerald arcs between nodes) */}
+      {autoLinks.map((link) => {
+        const fromNode = nodes.find((n) => n.id === link.from);
+        const toNode = nodes.find((n) => n.id === link.to);
+        if (!fromNode || !toNode) return null;
+        return (
+          <NodeLink
+            key={`auto-${link.from}-${link.to}`}
+            from={fromNode.position}
+            to={toNode.position}
+            color="#10b981"
+            dashed={false}
+          />
+        );
+      })}
+
+      {/* Cross-speak links (dashed violet arcs between nodes) */}
+      {crossSpeakLinks.map((link) => {
+        const fromNode = nodes.find((n) => n.id === link.nodeA);
+        const toNode = nodes.find((n) => n.id === link.nodeB);
+        if (!fromNode || !toNode) return null;
+        return (
+          <NodeLink
+            key={`xspeak-${link.id}`}
+            from={fromNode.position}
+            to={toNode.position}
+            color="#8b5cf6"
+            dashed={true}
           />
         );
       })}

@@ -96,17 +96,38 @@ export default function Sidebar() {
             autoFocus
             className="w-full px-2 py-1.5 text-xs bg-bg-primary border border-border-default rounded-md text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
           />
-          <input
-            type="text"
-            value={newNodeDir}
-            onChange={(e) => setNewNodeDir(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleCreateNode();
-              if (e.key === "Escape") setShowNewNode(false);
-            }}
-            placeholder="Project directory (required)..."
-            className="w-full px-2 py-1.5 mt-1 text-xs bg-bg-primary border border-border-default rounded-md text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
-          />
+          <div className="flex gap-1 mt-1">
+            <input
+              type="text"
+              value={newNodeDir}
+              onChange={(e) => setNewNodeDir(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleCreateNode();
+                if (e.key === "Escape") setShowNewNode(false);
+              }}
+              placeholder="Project directory (required)..."
+              className="flex-1 px-2 py-1.5 text-xs bg-bg-primary border border-border-default rounded-md text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  const { open } = await import("@tauri-apps/plugin-dialog");
+                  const selected = await open({ directory: true, multiple: false, title: "Select project directory" });
+                  if (selected) setNewNodeDir(selected as string);
+                } catch {
+                  // Fallback: dialog not available (e.g. dev browser)
+                }
+              }}
+              className="px-2 py-1.5 text-xs bg-bg-primary border border-border-default rounded-md text-text-muted hover:text-accent-cyan hover:border-accent-cyan/50 transition-colors shrink-0"
+              title="Browse..."
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M1 4V10H11V4H1Z" stroke="currentColor" strokeWidth="1" />
+                <path d="M1 4L3 2H6L7 4" stroke="currentColor" strokeWidth="1" />
+              </svg>
+            </button>
+          </div>
           <div className="flex gap-1.5 mt-1.5">
             <button
               onClick={handleCreateNode}
@@ -202,6 +223,18 @@ export default function Sidebar() {
                       <span className="text-xs text-text-secondary truncate flex-1">
                         {agent.name}
                       </span>
+                      {/* Diff badge */}
+                      {agent.diffs.length > 0 && (
+                        <span className="px-1 py-0 text-[9px] rounded bg-accent-violet/20 text-accent-violet" title={`${agent.diffs.length} file(s) changed`}>
+                          {agent.diffs.length}d
+                        </span>
+                      )}
+                      {/* Message count badge */}
+                      {agent.messages.length > 0 && (
+                        <span className="px-1 py-0 text-[9px] rounded bg-accent-cyan/20 text-accent-cyan" title={`${agent.messages.length} messages`}>
+                          {agent.messages.length}
+                        </span>
+                      )}
                       <span className="text-[10px] text-text-muted capitalize">
                         {agent.status}
                       </span>
@@ -219,13 +252,34 @@ export default function Sidebar() {
                         autoFocus
                         className="w-full px-2 py-1 text-xs bg-bg-primary border border-border-default rounded text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
                       />
-                      <input
-                        type="text"
-                        value={newAgentCwd}
-                        onChange={(e) => setNewAgentCwd(e.target.value)}
-                        placeholder={`Working dir (default: ${node.directory})`}
-                        className="w-full px-2 py-1 mt-1 text-xs bg-bg-primary border border-border-default rounded text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
-                      />
+                      <div className="flex gap-1 mt-1">
+                        <input
+                          type="text"
+                          value={newAgentCwd}
+                          onChange={(e) => setNewAgentCwd(e.target.value)}
+                          placeholder={`Working dir (default: ${node.directory})`}
+                          className="flex-1 px-2 py-1 text-xs bg-bg-primary border border-border-default rounded text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
+                        />
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const { open } = await import("@tauri-apps/plugin-dialog");
+                              const selected = await open({ directory: true, multiple: false, title: "Select working directory" });
+                              if (selected) setNewAgentCwd(selected as string);
+                            } catch {
+                              // Fallback: dialog not available
+                            }
+                          }}
+                          className="px-1.5 py-1 text-xs bg-bg-primary border border-border-default rounded text-text-muted hover:text-accent-cyan hover:border-accent-cyan/50 transition-colors shrink-0"
+                          title="Browse..."
+                        >
+                          <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                            <path d="M1 4V10H11V4H1Z" stroke="currentColor" strokeWidth="1" />
+                            <path d="M1 4L3 2H6L7 4" stroke="currentColor" strokeWidth="1" />
+                          </svg>
+                        </button>
+                      </div>
                       <textarea
                         value={newAgentTask}
                         onChange={(e) => setNewAgentTask(e.target.value)}

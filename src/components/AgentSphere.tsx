@@ -118,6 +118,45 @@ export default function AgentSphere({ agent, position, nodeColor }: Props) {
         <sphereGeometry args={[0.05, 16, 16]} />
         <meshBasicMaterial color={STATUS_COLORS[agent.status]} />
       </mesh>
+
+      {/* Diff indicator — small violet ring when agent has code changes */}
+      {agent.diffs.length > 0 && (
+        <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, -0.15, 0]}>
+          <ringGeometry args={[0.28, 0.32, 32]} />
+          <meshBasicMaterial
+            color="#8b5cf6"
+            transparent
+            opacity={0.6}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      )}
+
+      {/* Message activity indicator — small orbiting dot when messages exist */}
+      {agent.messages.length > 0 && (
+        <MessageDot />
+      )}
     </group>
+  );
+}
+
+function MessageDot() {
+  const dotRef = useRef<Mesh>(null);
+
+  useFrame((state) => {
+    if (!dotRef.current) return;
+    const t = state.clock.elapsedTime * 1.8;
+    dotRef.current.position.set(
+      Math.cos(t) * 0.35,
+      0.05,
+      Math.sin(t) * 0.35
+    );
+  });
+
+  return (
+    <mesh ref={dotRef}>
+      <sphereGeometry args={[0.04, 12, 12]} />
+      <meshBasicMaterial color="#06b6d4" />
+    </mesh>
   );
 }

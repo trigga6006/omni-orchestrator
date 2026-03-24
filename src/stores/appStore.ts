@@ -8,6 +8,7 @@ import type {
   AgentMessage,
   DiffEntry,
   CrossSpeakLink,
+  ActivityEvent,
 } from "../types";
 
 const NODE_COLORS = [
@@ -60,6 +61,12 @@ interface AppState {
   // Actions - Connections
   addConnection: (from: string, to: string) => void;
 
+  // Activity feed
+  activityLog: ActivityEvent[];
+  activityFeedOpen: boolean;
+  pushActivity: (event: Omit<ActivityEvent, "id" | "timestamp">) => void;
+  toggleActivityFeed: () => void;
+
   // Actions - UI
   selectNode: (id: string | null) => void;
   selectAgent: (id: string | null) => void;
@@ -103,6 +110,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   showDiffFor: null,
   sidebarOpen: true,
   panelView: "chat",
+  activityLog: [],
+  activityFeedOpen: false,
 
   createNode: (name, directory) => {
     const state = get();
@@ -135,6 +144,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
 
   addAgent: (nodeId, name, cwd) => {
+    const state = get();
+    const node = state.nodes.find((n) => n.id === nodeId);
     const agent: Agent = {
       id: genId(),
       peerId: null,
@@ -156,6 +167,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         n.id === nodeId ? { ...n, agents: [...n.agents, agent.id] } : n
       ),
     }));
+    get().pushActivity({
+      type: "agent_spawn",
+      agentId: agent.id,
+      agentName: name,
+      nodeId,
+      nodeName: node?.name,
+      text: `Agent "${name}" spawned on node "${node?.name ?? "unknown"}"`,
+    });
     return agent;
   },
 
@@ -189,28 +208,53 @@ export const useAppStore = create<AppState>((set, get) => ({
       agents: s.agents.map((a) => (a.id === id ? { ...a, pid } : a)),
     })),
 
-  addAgentMessage: (agentId, message) =>
+  addAgentMessage: (agentId, message) => {
+    const agent = get().agents.find((a) => a.id === agentId);
     set((s) => ({
       agents: s.agents.map((a) =>
         a.id === agentId
           ? { ...a, messages: [...a.messages, message] }
           : a
       ),
-    })),
+    }));
+    if (agent) {
+      get().pushActivity({
+        type: "message",
+        agentId,
+        agentName: agent.name,
+        nodeId: agent.nodeId,
+        text: message.direction === "outbound"
+          ? `[${agent.name}] -> ${message.text.slice(0, 120)}`
+          : `[${agent.name}] <- ${message.text.slice(0, 120)}`,
+      });
+    }
+  },
 
   setAgentDiff: (agentId, diff) =>
     set((s) => ({
       agents: s.agents.map((a) => (a.id === agentId ? { ...a, diff } : a)),
     })),
 
-  setAgentDiffs: (agentId, diffs) =>
+  setAgentDiffs: (agentId, diffs) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    const prevCount = agent?.diffs.length ?? 0;
     set((s) => ({
       agents: s.agents.map((a) =>
         a.id === agentId
           ? { ...a, diffs, diff: diffs.length > 0 ? diffs[0] : null }
           : a
       ),
-    })),
+    }));
+    if (agent && diffs.length > 0 && diffs.length !== prevCount) {
+      get().pushActivity({
+        type: "diff",
+        agentId,
+        agentName: agent.name,
+        nodeId: agent.nodeId,
+        text: `${agent.name} changed ${diffs.length} file(s): ${diffs.map((d) => d.fileName.split("/").pop()).join(", ")}`,
+      });
+    }
+  },
 
   addConnection: (from, to) =>
     set((s) => {
@@ -234,26 +278,43 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }),
 
-  addCrossSpeakLink: (nodeA, nodeB) =>
-    set((s) => {
-      const exists = s.crossSpeakLinks.some(
-        (l) =>
-          (l.nodeA === nodeA && l.nodeB === nodeB) ||
-          (l.nodeA === nodeB && l.nodeB === nodeA)
-      );
-      if (exists) return s;
-      return {
-        crossSpeakLinks: [
-          ...s.crossSpeakLinks,
-          { id: genId(), nodeA, nodeB, createdAt: new Date().toISOString() },
-        ],
-      };
-    }),
+  addCrossSpeakLink: (nodeA, nodeB) => {
+    const state = get();
+    const exists = state.crossSpeakLinks.some(
+      (l) =>
+        (l.nodeA === nodeA && l.nodeB === nodeB) ||
+        (l.nodeA === nodeB && l.nodeB === nodeA)
+    );
+    if (exists) return;
+    const nA = state.nodes.find((n) => n.id === nodeA);
+    const nB = state.nodes.find((n) => n.id === nodeB);
+    set((s) => ({
+      crossSpeakLinks: [
+        ...s.crossSpeakLinks,
+        { id: genId(), nodeA, nodeB, createdAt: new Date().toISOString() },
+      ],
+    }));
+    get().pushActivity({
+      type: "cross_speak",
+      text: `Cross-speak enabled: "${nA?.name ?? nodeA}" <-> "${nB?.name ?? nodeB}"`,
+    });
+  },
 
   removeCrossSpeakLink: (linkId) =>
     set((s) => ({
       crossSpeakLinks: s.crossSpeakLinks.filter((l) => l.id !== linkId),
     })),
+
+  pushActivity: (event) =>
+    set((s) => ({
+      activityLog: [
+        ...s.activityLog.slice(-199), // keep last 200 events
+        { ...event, id: genId(), timestamp: new Date().toISOString() },
+      ],
+    })),
+
+  toggleActivityFeed: () =>
+    set((s) => ({ activityFeedOpen: !s.activityFeedOpen })),
 
   canNodesCommunicate: (nodeIdA, nodeIdB) => {
     if (nodeIdA === nodeIdB) return true;
@@ -275,7 +336,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectNode: (id) => set({ selectedNodeId: id, selectedAgentId: null }),
-  selectAgent: (id) => set({ selectedAgentId: id }),
+  selectAgent: (id) => {
+    if (id) {
+      const agent = get().agents.find((a) => a.id === id);
+      set({ selectedAgentId: id, selectedNodeId: agent?.nodeId ?? get().selectedNodeId });
+    } else {
+      set({ selectedAgentId: null });
+    }
+  },
   toggleDiff: (agentId) =>
     set((s) => ({
       showDiffFor: s.showDiffFor === agentId ? null : agentId,

@@ -53,6 +53,17 @@ export default function TitleBar() {
           <span className="text-text-muted">
             {broker.connected ? "Online" : "Offline"}
           </span>
+          {broker.connected && (
+            <>
+              <span className="text-border-default">|</span>
+              <span className="text-text-muted">
+                {broker.peerCount} peer{broker.peerCount !== 1 ? "s" : ""}
+              </span>
+              <span className="text-text-muted">
+                {broker.nodeCount} node{broker.nodeCount !== 1 ? "s" : ""}
+              </span>
+            </>
+          )}
         </div>
 
         <WindowControls />

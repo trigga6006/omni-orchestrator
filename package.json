@@ -15,6 +15,7 @@
     "@react-three/fiber": "^9.0.0",
     "@react-three/postprocessing": "^3.0.0",
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-shell": "^2.0.0",
     "monaco-editor": "^0.52.0",
     "postprocessing": "^6.36.0",
