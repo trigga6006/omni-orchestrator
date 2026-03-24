@@ -1,4 +1,5 @@
 import { useWebSocket } from "./hooks/useWebSocket";
+import { useDiffPoller } from "./hooks/useDiffPoller";
 import { useAppStore } from "./stores/appStore";
 import Scene3D from "./components/Scene3D";
 import TitleBar from "./components/TitleBar";
@@ -7,6 +8,7 @@ import AgentPanel from "./components/AgentPanel";
 
 export default function App() {
   useWebSocket();
+  useDiffPoller();
 
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const selectedAgentId = useAppStore((s) => s.selectedAgentId);

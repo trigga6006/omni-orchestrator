@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAppStore } from "../stores/appStore";
+import { spawnAgent, killAgent } from "../lib/agentManager";
 import type { AgentStatus } from "../types";
 
 const STATUS_DOT: Record<AgentStatus, string> = {
@@ -36,13 +37,24 @@ export default function Sidebar() {
     selectNode(node.id);
   };
 
-  const handleCreateAgent = (nodeId: string) => {
+  const handleCreateAgent = async (nodeId: string) => {
     if (!newAgentName.trim()) return;
-    const agent = addAgent(nodeId, newAgentName.trim(), newAgentCwd.trim() || ".");
+    const cwd = newAgentCwd.trim() || ".";
+    const name = newAgentName.trim();
+    const agent = addAgent(nodeId, name, cwd);
     setNewAgentName("");
     setNewAgentCwd("");
     setShowNewAgent(null);
     selectAgent(agent.id);
+
+    // Spawn the actual Claude Code process
+    try {
+      await spawnAgent(agent.id, nodeId, name, cwd);
+    } catch (err) {
+      console.error("Failed to spawn agent:", err);
+      // Agent is already in the store with "starting" status,
+      // agentManager will set it to "error" on failure
+    }
   };
 
   return (

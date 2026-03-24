@@ -313,6 +313,153 @@ function handleSync(): WsEvent {
   return { type: "sync_state", peers, nodes, peer_count: peers.length };
 }
 
+// ---- Diff handler ----
+
+interface DiffFile {
+  fileName: string;
+  patch: string;
+  original: string;
+  modified: string;
+}
+
+async function handleGetDiff(body: { peer_id: string }): Promise<{ files: DiffFile[] }> {
+  const peer = db.query("SELECT * FROM peers WHERE id = ?").get(body.peer_id) as Peer | null;
+  if (!peer) return { files: [] };
+
+  const cwd = peer.cwd;
+
+  try {
+    // Get list of changed files (staged + unstaged)
+    const diffNameOnly = Bun.spawnSync(["git", "diff", "--name-only", "HEAD"], { cwd });
+    const fileNames = diffNameOnly.stdout.toString().trim().split("\n").filter(Boolean);
+
+    if (fileNames.length === 0) {
+      // Also check for untracked files
+      const untracked = Bun.spawnSync(["git", "ls-files", "--others", "--exclude-standard"], { cwd });
+      const untrackedFiles = untracked.stdout.toString().trim().split("\n").filter(Boolean);
+
+      if (untrackedFiles.length === 0) return { files: [] };
+
+      // For untracked files, original is empty, modified is the file content
+      const files: DiffFile[] = [];
+      for (const fileName of untrackedFiles.slice(0, 20)) {
+        try {
+          const content = await Bun.file(`${cwd}/${fileName}`).text();
+          files.push({
+            fileName,
+            patch: `+++ new file: ${fileName}`,
+            original: "",
+            modified: content,
+          });
+        } catch {
+          // skip files we can't read
+        }
+      }
+      return { files };
+    }
+
+    const files: DiffFile[] = [];
+
+    for (const fileName of fileNames.slice(0, 20)) {
+      try {
+        // Get the original version from HEAD
+        const origProc = Bun.spawnSync(["git", "show", `HEAD:${fileName}`], { cwd });
+        const original = origProc.exitCode === 0 ? origProc.stdout.toString() : "";
+
+        // Get the current working version
+        let modified = "";
+        try {
+          modified = await Bun.file(`${cwd}/${fileName}`).text();
+        } catch {
+          modified = ""; // file was deleted
+        }
+
+        // Get the unified diff patch
+        const patchProc = Bun.spawnSync(["git", "diff", "HEAD", "--", fileName], { cwd });
+        const patch = patchProc.stdout.toString();
+
+        files.push({ fileName, patch, original, modified });
+      } catch {
+        // skip files we can't process
+      }
+    }
+
+    return { files };
+  } catch (err) {
+    console.error("[broker] git diff failed:", err);
+    return { files: [] };
+  }
+}
+
+// ---- Route message handler ----
+// Picks the best agent in a node (or globally) to handle a user message.
+
+function handleRouteMessage(body: {
+  text: string;
+  node_id?: string;
+}): { ok: boolean; routed_to: string; peer_id: string } | { ok: false; error: string } {
+  let peers: Peer[];
+
+  if (body.node_id) {
+    peers = selectPeersByNode.all(body.node_id) as Peer[];
+  } else {
+    peers = selectAllPeers.all() as Peer[];
+  }
+
+  // Filter to alive peers only
+  peers = peers.filter((p) => {
+    try {
+      process.kill(p.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
+  if (peers.length === 0) {
+    return { ok: false, error: "No active agents available" };
+  }
+
+  // Simple routing: pick the peer whose summary best matches the message,
+  // or fall back to the most recently seen peer.
+  const textLower = body.text.toLowerCase();
+  let bestPeer = peers[0];
+  let bestScore = 0;
+
+  for (const peer of peers) {
+    // Simple keyword overlap scoring
+    const summaryWords = peer.summary.toLowerCase().split(/\s+/);
+    const textWords = textLower.split(/\s+/);
+    let score = 0;
+    for (const word of textWords) {
+      if (word.length > 2 && summaryWords.some((sw) => sw.includes(word))) {
+        score++;
+      }
+    }
+    // Also favor more recently active peers
+    const recency = new Date(peer.last_seen).getTime();
+    score += recency / 1e15; // tiny tiebreaker
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestPeer = peer;
+    }
+  }
+
+  // Send the message to the chosen peer
+  const now = new Date().toISOString();
+  insertMessage.run("user", bestPeer.id, body.text, now);
+  broadcast({
+    type: "message_sent",
+    from_id: "user",
+    to_id: bestPeer.id,
+    text: body.text,
+    sent_at: now,
+  });
+
+  return { ok: true, routed_to: bestPeer.summary || bestPeer.id, peer_id: bestPeer.id };
+}
+
 // ---- HTTP + WebSocket Server ----
 
 Bun.serve({
@@ -401,6 +548,12 @@ Bun.serve({
         case "/assign-node":
           handleAssignNode(body);
           result = { ok: true };
+          break;
+        case "/get-diff":
+          result = await handleGetDiff(body);
+          break;
+        case "/route-message":
+          result = handleRouteMessage(body);
           break;
         default:
           return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders });

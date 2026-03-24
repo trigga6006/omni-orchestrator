@@ -20,6 +20,7 @@ export interface Agent {
   pid: number | null;
   messages: AgentMessage[];
   diff: DiffEntry | null;
+  diffs: DiffEntry[];     // all changed files
   createdAt: string;
   lastSeen: string;
 }

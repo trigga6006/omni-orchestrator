@@ -45,8 +45,10 @@ interface AppState {
   updateAgentStatus: (id: string, status: AgentStatus) => void;
   updateAgentSummary: (id: string, summary: string) => void;
   updateAgentPeerId: (id: string, peerId: string) => void;
+  updateAgentPid: (id: string, pid: number) => void;
   addAgentMessage: (agentId: string, message: AgentMessage) => void;
   setAgentDiff: (agentId: string, diff: DiffEntry | null) => void;
+  setAgentDiffs: (agentId: string, diffs: DiffEntry[]) => void;
 
   // Actions - Connections
   addConnection: (from: string, to: string) => void;
@@ -127,6 +129,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       pid: null,
       messages: [],
       diff: null,
+      diffs: [],
       createdAt: new Date().toISOString(),
       lastSeen: new Date().toISOString(),
     };
@@ -164,6 +167,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       agents: s.agents.map((a) => (a.id === id ? { ...a, peerId } : a)),
     })),
 
+  updateAgentPid: (id, pid) =>
+    set((s) => ({
+      agents: s.agents.map((a) => (a.id === id ? { ...a, pid } : a)),
+    })),
+
   addAgentMessage: (agentId, message) =>
     set((s) => ({
       agents: s.agents.map((a) =>
@@ -176,6 +184,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAgentDiff: (agentId, diff) =>
     set((s) => ({
       agents: s.agents.map((a) => (a.id === agentId ? { ...a, diff } : a)),
+    })),
+
+  setAgentDiffs: (agentId, diffs) =>
+    set((s) => ({
+      agents: s.agents.map((a) =>
+        a.id === agentId
+          ? { ...a, diffs, diff: diffs.length > 0 ? diffs[0] : null }
+          : a
+      ),
     })),
 
   addConnection: (from, to) =>
