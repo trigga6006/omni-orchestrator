@@ -7,13 +7,28 @@ import Sidebar from "@/components/Sidebar";
 import NodeCanvas from "@/components/NodeCanvas";
 import PromptBar from "@/components/PromptBar";
 import RightDrawer from "@/components/RightDrawer";
+import WelcomeScreen from "@/components/WelcomeScreen";
 
 export default function App() {
   useWebSocket();
   useDiffPoller();
 
+  const currentView = useAppStore((s) => s.currentView);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const rightDrawerOpen = useAppStore((s) => s.rightDrawerOpen);
+
+  if (currentView === "welcome") {
+    return (
+      <div className="w-full h-full flex flex-col bg-black">
+        <ErrorBoundary>
+          <TitleBar />
+        </ErrorBoundary>
+        <div className="flex-1 overflow-hidden">
+          <WelcomeScreen />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full h-full flex flex-col bg-background">

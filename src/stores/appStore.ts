@@ -58,6 +58,7 @@ interface AppState {
   clearNodeNotifications: (nodeId: string) => void;
 
   // UI state
+  currentView: "welcome" | "orchestrator";
   selectedNodeId: string | null;
   selectedAgentId: string | null;
   showDiffFor: string | null; // agent ID to show diff panel
@@ -119,6 +120,7 @@ interface AppState {
   setSidebarView: (view: "nodes" | "activity") => void;
   toggleRightDrawer: () => void;
   openRightDrawer: () => void;
+  setCurrentView: (view: "welcome" | "orchestrator") => void;
   setPanelView: (view: "chat" | "swarm" | "diff" | "info") => void;
   setBrokerStatus: (status: Partial<BrokerStatus>) => void;
 }
@@ -153,6 +155,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   broker: { connected: false, peerCount: 0, nodeCount: 0, url: "ws://127.0.0.1:7899" },
   settings: { autoSendMessages: true },
 
+  currentView: "welcome",
   selectedNodeId: null,
   selectedAgentId: null,
   showDiffFor: null,
@@ -460,6 +463,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       showDiffFor: s.showDiffFor === agentId ? null : agentId,
       panelView: "diff",
     })),
+  setCurrentView: (view) => set({ currentView: view }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarView: (view) => set({ sidebarView: view }),
   toggleRightDrawer: () => set((s) => ({ rightDrawerOpen: !s.rightDrawerOpen })),
