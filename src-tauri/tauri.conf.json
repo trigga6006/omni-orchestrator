@@ -5,12 +5,11 @@
   "identifier": "com.claude-swarm.app",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1430",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
-    "title": "Claude Swarm",
     "windows": [
       {
         "label": "main",
@@ -41,19 +40,7 @@
   },
   "plugins": {
     "shell": {
-      "open": true,
-      "scope": [
-        {
-          "name": "bun-broker",
-          "cmd": "bun",
-          "args": true
-        },
-        {
-          "name": "claude-agent",
-          "cmd": "claude",
-          "args": true
-        }
-      ]
+      "open": true
     }
   }
 }

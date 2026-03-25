@@ -16,7 +16,11 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
     "resolveJsonModule": true,
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src"]
 }

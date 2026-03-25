@@ -4,10 +4,49 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "shell:allow-spawn",
-    "shell:allow-execute",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-start-dragging",
+    "core:window:allow-is-maximized",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "bun-broker",
+          "cmd": "bun",
+          "args": true,
+          "sidecar": false
+        },
+        {
+          "name": "claude-agent",
+          "cmd": "claude",
+          "args": true,
+          "sidecar": false
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "bun-broker",
+          "cmd": "bun",
+          "args": true,
+          "sidecar": false
+        },
+        {
+          "name": "claude-agent",
+          "cmd": "claude",
+          "args": true,
+          "sidecar": false
+        }
+      ]
+    },
     "shell:allow-open",
     "shell:allow-kill",
-    "shell:allow-stdin-write"
+    "shell:allow-stdin-write",
+    "dialog:allow-open"
   ]
 }

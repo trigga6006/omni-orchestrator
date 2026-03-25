@@ -1,14 +1,32 @@
 import { create } from "zustand";
+import {
+  addCrossSpeakLinkOnBroker,
+  removeCrossSpeakLinkOnBroker,
+} from "../lib/broker";
 import type {
   SwarmNode,
   Agent,
   AgentStatus,
+  AgentRole,
+  AgentConfig,
   ConnectionEdge,
   BrokerStatus,
   AgentMessage,
   DiffEntry,
   CrossSpeakLink,
+  ActivityEvent,
 } from "../types";
+
+function defaultAgentConfig(role: AgentRole): AgentConfig {
+  return {
+    model: role === "boss" ? "opus" : "sonnet",
+    permissionMode: "auto",
+    maxTurns: null,
+    customSystemPrompt: "",
+    allowedTools: [],
+    disallowedTools: [],
+  };
+}
 
 const NODE_COLORS = [
   "#06b6d4", // cyan
@@ -21,6 +39,10 @@ const NODE_COLORS = [
   "#f97316", // orange
 ];
 
+interface SwarmSettings {
+  autoSendMessages: boolean; // auto-press Enter after injecting peer messages
+}
+
 interface AppState {
   // Data
   nodes: SwarmNode[];
@@ -28,13 +50,28 @@ interface AppState {
   connections: ConnectionEdge[];
   crossSpeakLinks: CrossSpeakLink[];
   broker: BrokerStatus;
+  settings: SwarmSettings;
+
+  // Notifications — per-node unread count (bell icon on node cards)
+  nodeNotifications: Record<string, number>;
+  addNodeNotification: (nodeId: string) => void;
+  clearNodeNotifications: (nodeId: string) => void;
 
   // UI state
   selectedNodeId: string | null;
   selectedAgentId: string | null;
   showDiffFor: string | null; // agent ID to show diff panel
   sidebarOpen: boolean;
-  panelView: "chat" | "diff" | "info";
+  sidebarView: "nodes" | "activity";
+  rightDrawerOpen: boolean;
+  panelView: "chat" | "swarm" | "diff" | "info";
+
+  // Drag-to-connect state
+  dragging: { fromNodeId: string; cursorX: number; cursorY: number } | null;
+  connectionMenu: { nodeId: string; x: number; y: number } | null;
+
+  // Actions - Settings
+  updateSettings: (patch: Partial<SwarmSettings>) => void;
 
   // Actions - Nodes
   createNode: (name: string, directory: string) => SwarmNode;
@@ -47,7 +84,7 @@ interface AppState {
   canNodesCommunicate: (nodeIdA: string, nodeIdB: string) => boolean;
 
   // Actions - Agents
-  addAgent: (nodeId: string, name: string, cwd: string) => Agent;
+  addAgent: (nodeId: string, name: string, cwd: string, role?: AgentRole) => Agent;
   removeAgent: (id: string) => void;
   updateAgentStatus: (id: string, status: AgentStatus) => void;
   updateAgentSummary: (id: string, summary: string) => void;
@@ -56,16 +93,33 @@ interface AppState {
   addAgentMessage: (agentId: string, message: AgentMessage) => void;
   setAgentDiff: (agentId: string, diff: DiffEntry | null) => void;
   setAgentDiffs: (agentId: string, diffs: DiffEntry[]) => void;
+  updateAgentConfig: (agentId: string, patch: Partial<AgentConfig>) => void;
 
   // Actions - Connections
   addConnection: (from: string, to: string) => void;
+
+  // Activity feed
+  activityLog: ActivityEvent[];
+  activityFeedOpen: boolean;
+  pushActivity: (event: Omit<ActivityEvent, "id" | "timestamp">) => void;
+  toggleActivityFeed: () => void;
+
+  // Actions - Drag-to-connect
+  startDrag: (fromNodeId: string, cursorX: number, cursorY: number) => void;
+  updateDrag: (cursorX: number, cursorY: number) => void;
+  endDrag: () => void;
+  openConnectionMenu: (nodeId: string, x: number, y: number) => void;
+  closeConnectionMenu: () => void;
 
   // Actions - UI
   selectNode: (id: string | null) => void;
   selectAgent: (id: string | null) => void;
   toggleDiff: (agentId: string | null) => void;
   toggleSidebar: () => void;
-  setPanelView: (view: "chat" | "diff" | "info") => void;
+  setSidebarView: (view: "nodes" | "activity") => void;
+  toggleRightDrawer: () => void;
+  openRightDrawer: () => void;
+  setPanelView: (view: "chat" | "swarm" | "diff" | "info") => void;
   setBrokerStatus: (status: Partial<BrokerStatus>) => void;
 }
 
@@ -97,25 +151,58 @@ export const useAppStore = create<AppState>((set, get) => ({
   connections: [],
   crossSpeakLinks: [],
   broker: { connected: false, peerCount: 0, nodeCount: 0, url: "ws://127.0.0.1:7899" },
+  settings: { autoSendMessages: true },
 
   selectedNodeId: null,
   selectedAgentId: null,
   showDiffFor: null,
   sidebarOpen: true,
+  sidebarView: "nodes",
+  rightDrawerOpen: false,
   panelView: "chat",
+  nodeNotifications: {},
+  activityLog: [],
+  activityFeedOpen: false,
+  dragging: null,
+  connectionMenu: null,
+
+  updateSettings: (patch) => set((s) => ({ settings: { ...s.settings, ...patch } })),
+
+  addNodeNotification: (nodeId) =>
+    set((s) => ({
+      nodeNotifications: {
+        ...s.nodeNotifications,
+        [nodeId]: (s.nodeNotifications[nodeId] ?? 0) + 1,
+      },
+    })),
+
+  clearNodeNotifications: (nodeId) =>
+    set((s) => {
+      const { [nodeId]: _, ...rest } = s.nodeNotifications;
+      return { nodeNotifications: rest };
+    }),
 
   createNode: (name, directory) => {
     const state = get();
+    const color = NODE_COLORS[colorIndex++ % NODE_COLORS.length];
     const node: SwarmNode = {
       id: genId(),
       name,
       directory,
-      color: NODE_COLORS[colorIndex++ % NODE_COLORS.length],
+      color,
       position: getNodePosition(state.nodes.length, state.nodes.length + 1),
       agents: [],
       createdAt: new Date().toISOString(),
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
+
+    // Register with the broker so agents can reference the node by ID
+    fetch("http://127.0.0.1:7899/create-node", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: node.id, name, color }),
+    }).catch(() => {});
+
     return node;
   },
 
@@ -134,12 +221,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       nodes: s.nodes.map((n) => (n.id === id ? { ...n, position: pos } : n)),
     })),
 
-  addAgent: (nodeId, name, cwd) => {
+  addAgent: (nodeId, name, cwd, role) => {
+    const state = get();
+    const node = state.nodes.find((n) => n.id === nodeId);
+    const resolvedRole = role ?? "worker";
     const agent: Agent = {
       id: genId(),
       peerId: null,
       nodeId,
       name,
+      role: resolvedRole,
       status: "starting",
       summary: "",
       cwd,
@@ -147,6 +238,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       messages: [],
       diff: null,
       diffs: [],
+      config: defaultAgentConfig(resolvedRole),
       createdAt: new Date().toISOString(),
       lastSeen: new Date().toISOString(),
     };
@@ -156,6 +248,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         n.id === nodeId ? { ...n, agents: [...n.agents, agent.id] } : n
       ),
     }));
+    get().pushActivity({
+      type: "agent_spawn",
+      agentId: agent.id,
+      agentName: name,
+      nodeId,
+      nodeName: node?.name,
+      text: `Agent "${name}" spawned on node "${node?.name ?? "unknown"}"`,
+    });
     return agent;
   },
 
@@ -189,26 +289,68 @@ export const useAppStore = create<AppState>((set, get) => ({
       agents: s.agents.map((a) => (a.id === id ? { ...a, pid } : a)),
     })),
 
-  addAgentMessage: (agentId, message) =>
+  addAgentMessage: (agentId, message) => {
+    const agent = get().agents.find((a) => a.id === agentId);
     set((s) => ({
       agents: s.agents.map((a) =>
         a.id === agentId
           ? { ...a, messages: [...a.messages, message] }
           : a
       ),
-    })),
+    }));
+    if (agent) {
+      get().pushActivity({
+        type: "message",
+        agentId,
+        agentName: agent.name,
+        nodeId: agent.nodeId,
+        text: message.direction === "outbound"
+          ? `[${agent.name}] -> ${message.text.slice(0, 120)}`
+          : `[${agent.name}] <- ${message.text.slice(0, 120)}`,
+      });
+
+      // Fire a node notification when a boss/lead agent receives a substantial
+      // inbound message (long summary or COMPLETED report from sub-agents).
+      if (
+        message.direction === "inbound" &&
+        agent.role === "boss" &&
+        (message.text.length >= 300 || /COMPLETED:/i.test(message.text))
+      ) {
+        get().addNodeNotification(agent.nodeId);
+      }
+    }
+  },
 
   setAgentDiff: (agentId, diff) =>
     set((s) => ({
       agents: s.agents.map((a) => (a.id === agentId ? { ...a, diff } : a)),
     })),
 
-  setAgentDiffs: (agentId, diffs) =>
+  setAgentDiffs: (agentId, diffs) => {
+    const agent = get().agents.find((a) => a.id === agentId);
+    const prevCount = agent?.diffs.length ?? 0;
     set((s) => ({
       agents: s.agents.map((a) =>
         a.id === agentId
           ? { ...a, diffs, diff: diffs.length > 0 ? diffs[0] : null }
           : a
+      ),
+    }));
+    if (agent && diffs.length > 0 && diffs.length !== prevCount) {
+      get().pushActivity({
+        type: "diff",
+        agentId,
+        agentName: agent.name,
+        nodeId: agent.nodeId,
+        text: `${agent.name} changed ${diffs.length} file(s): ${diffs.map((d) => d.fileName.split("/").pop()).join(", ")}`,
+      });
+    }
+  },
+
+  updateAgentConfig: (agentId, patch) =>
+    set((s) => ({
+      agents: s.agents.map((a) =>
+        a.id === agentId ? { ...a, config: { ...a.config, ...patch } } : a
       ),
     })),
 
@@ -234,26 +376,47 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }),
 
-  addCrossSpeakLink: (nodeA, nodeB) =>
-    set((s) => {
-      const exists = s.crossSpeakLinks.some(
-        (l) =>
-          (l.nodeA === nodeA && l.nodeB === nodeB) ||
-          (l.nodeA === nodeB && l.nodeB === nodeA)
-      );
-      if (exists) return s;
-      return {
-        crossSpeakLinks: [
-          ...s.crossSpeakLinks,
-          { id: genId(), nodeA, nodeB, createdAt: new Date().toISOString() },
-        ],
-      };
-    }),
+  addCrossSpeakLink: (nodeA, nodeB) => {
+    const state = get();
+    const exists = state.crossSpeakLinks.some(
+      (l) =>
+        (l.nodeA === nodeA && l.nodeB === nodeB) ||
+        (l.nodeA === nodeB && l.nodeB === nodeA)
+    );
+    if (exists) return;
+    const nA = state.nodes.find((n) => n.id === nodeA);
+    const nB = state.nodes.find((n) => n.id === nodeB);
+    const linkId = genId();
+    set((s) => ({
+      crossSpeakLinks: [
+        ...s.crossSpeakLinks,
+        { id: linkId, nodeA, nodeB, createdAt: new Date().toISOString() },
+      ],
+    }));
+    get().pushActivity({
+      type: "cross_speak",
+      text: `Cross-speak enabled: "${nA?.name ?? nodeA}" <-> "${nB?.name ?? nodeB}"`,
+    });
+    addCrossSpeakLinkOnBroker(linkId, nodeA, nodeB).catch(() => {});
+  },
 
-  removeCrossSpeakLink: (linkId) =>
+  removeCrossSpeakLink: (linkId) => {
     set((s) => ({
       crossSpeakLinks: s.crossSpeakLinks.filter((l) => l.id !== linkId),
+    }));
+    removeCrossSpeakLinkOnBroker(linkId).catch(() => {});
+  },
+
+  pushActivity: (event) =>
+    set((s) => ({
+      activityLog: [
+        ...s.activityLog.slice(-199), // keep last 200 events
+        { ...event, id: genId(), timestamp: new Date().toISOString() },
+      ],
     })),
+
+  toggleActivityFeed: () =>
+    set((s) => ({ activityFeedOpen: !s.activityFeedOpen })),
 
   canNodesCommunicate: (nodeIdA, nodeIdB) => {
     if (nodeIdA === nodeIdB) return true;
@@ -274,14 +437,33 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
   },
 
-  selectNode: (id) => set({ selectedNodeId: id, selectedAgentId: null }),
-  selectAgent: (id) => set({ selectedAgentId: id }),
+  startDrag: (fromNodeId, cursorX, cursorY) =>
+    set({ dragging: { fromNodeId, cursorX, cursorY } }),
+  updateDrag: (cursorX, cursorY) =>
+    set((s) => (s.dragging ? { dragging: { ...s.dragging, cursorX, cursorY } } : {})),
+  endDrag: () => set({ dragging: null }),
+  openConnectionMenu: (nodeId, x, y) =>
+    set({ connectionMenu: { nodeId, x, y } }),
+  closeConnectionMenu: () => set({ connectionMenu: null }),
+
+  selectNode: (id) => set({ selectedNodeId: id, selectedAgentId: null, rightDrawerOpen: !!id }),
+  selectAgent: (id) => {
+    if (id) {
+      const agent = get().agents.find((a) => a.id === id);
+      set({ selectedAgentId: id, selectedNodeId: agent?.nodeId ?? get().selectedNodeId, rightDrawerOpen: true });
+    } else {
+      set({ selectedAgentId: null });
+    }
+  },
   toggleDiff: (agentId) =>
     set((s) => ({
       showDiffFor: s.showDiffFor === agentId ? null : agentId,
       panelView: "diff",
     })),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  setSidebarView: (view) => set({ sidebarView: view }),
+  toggleRightDrawer: () => set((s) => ({ rightDrawerOpen: !s.rightDrawerOpen })),
+  openRightDrawer: () => set({ rightDrawerOpen: true }),
   setPanelView: (view) => set({ panelView: view }),
   setBrokerStatus: (status) =>
     set((s) => ({ broker: { ...s.broker, ...status } })),

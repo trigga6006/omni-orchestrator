@@ -1,131 +1,323 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 
-@theme {
-  --color-bg-primary: #06080d;
-  --color-bg-secondary: #0c1018;
-  --color-bg-surface: #111827;
-  --color-bg-elevated: #1a2235;
-  --color-bg-hover: #1e293b;
-  --color-border-subtle: #1e293b;
-  --color-border-default: #2a3548;
-  --color-text-primary: #f1f5f9;
-  --color-text-secondary: #94a3b8;
-  --color-text-muted: #64748b;
-  --color-accent-cyan: #06b6d4;
-  --color-accent-violet: #8b5cf6;
-  --color-accent-emerald: #10b981;
-  --color-accent-amber: #f59e0b;
-  --color-accent-red: #ef4444;
-  --color-glow-cyan: rgba(6, 182, 212, 0.15);
-  --color-glow-violet: rgba(139, 92, 246, 0.15);
+@custom-variant dark (&:is(.dark *));
+
+/* ------------------------------------------------------------------ */
+/* Theme                                                               */
+/* ------------------------------------------------------------------ */
+
+@theme inline {
+  --font-heading: "Geist Variable", system-ui, -apple-system, sans-serif;
+  --font-sans: "Geist Variable", system-ui, -apple-system, sans-serif;
+  --font-mono: "GeistMono Variable", "Geist Mono", ui-monospace, "Cascadia Code", "Fira Code", monospace;
+
+  /* shadcn core tokens */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* sidebar */
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* app-specific semantic tokens */
+  --color-surface: var(--surface);
+  --color-elevated: var(--elevated);
+  --color-emerald: #10b981;
+  --color-sky: #3b82f6;
+  --color-amber: #f59e0b;
+  --color-rose: #ef4444;
+  --color-violet: #8b5cf6;
+  --color-cyan: #06b6d4;
+
+  /* radius */
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+/* Dark-only palette — no .dark class needed */
+:root {
+  --radius: 0.5rem;
+
+  /* Backgrounds — very dark, with subtle luminance steps */
+  --background: oklch(0.065 0.005 285);
+  --surface: oklch(0.095 0.005 285);
+  --card: oklch(0.11 0.005 285);
+  --card-foreground: oklch(0.96 0 0);
+  --elevated: oklch(0.14 0.005 285);
+  --popover: oklch(0.11 0.005 285);
+  --popover-foreground: oklch(0.96 0 0);
+
+  /* Text */
+  --foreground: oklch(0.96 0 0);
+
+  /* Interactive */
+  --primary: oklch(0.96 0 0);
+  --primary-foreground: oklch(0.065 0.005 285);
+  --secondary: oklch(0.16 0.005 285);
+  --secondary-foreground: oklch(0.88 0 0);
+  --muted: oklch(0.16 0.005 285);
+  --muted-foreground: oklch(0.55 0 0);
+  --accent: oklch(0.18 0.005 285);
+  --accent-foreground: oklch(0.96 0 0);
+  --destructive: oklch(0.55 0.22 27);
+
+  /* Borders */
+  --border: oklch(0.20 0.005 285);
+  --input: oklch(0.22 0.005 285);
+  --ring: oklch(0.38 0.005 285);
+
+  /* Sidebar */
+  --sidebar: oklch(0.08 0.005 285);
+  --sidebar-foreground: oklch(0.96 0 0);
+  --sidebar-primary: oklch(0.65 0.18 160);
+  --sidebar-primary-foreground: oklch(0.96 0 0);
+  --sidebar-accent: oklch(0.16 0.005 285);
+  --sidebar-accent-foreground: oklch(0.96 0 0);
+  --sidebar-border: oklch(0.18 0.005 285);
+  --sidebar-ring: oklch(0.38 0.005 285);
+
+  /* Charts */
+  --chart-1: oklch(0.65 0.18 160);
+  --chart-2: oklch(0.60 0.18 250);
+  --chart-3: oklch(0.70 0.16 85);
+  --chart-4: oklch(0.65 0.22 330);
+  --chart-5: oklch(0.60 0.18 200);
 }
 
-html, body, #root {
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  -webkit-font-smoothing: antialiased;
+/* ------------------------------------------------------------------ */
+/* Base layer                                                          */
+/* ------------------------------------------------------------------ */
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    @apply border-border;
+    outline-color: oklch(0.38 0.005 285 / 0.5);
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html {
+    @apply font-sans;
+  }
+
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
 }
 
-/* Custom scrollbar */
+/* ------------------------------------------------------------------ */
+/* Scrollbar                                                           */
+/* ------------------------------------------------------------------ */
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
-
 ::-webkit-scrollbar-track {
   background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border-default);
+  background: oklch(0.25 0 0);
   border-radius: 3px;
 }
-
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-muted);
+  background: oklch(0.35 0 0);
 }
 
-/* Title bar drag region */
+/* ------------------------------------------------------------------ */
+/* Selection                                                           */
+/* ------------------------------------------------------------------ */
+
+::selection {
+  background: oklch(0.55 0.15 250 / 0.3);
+  color: var(--foreground);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tauri drag region                                                    */
+/* ------------------------------------------------------------------ */
+
 [data-tauri-drag-region] {
   -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
 }
-
 [data-tauri-drag-region] button,
-[data-tauri-drag-region] input {
+[data-tauri-drag-region] input,
+[data-tauri-drag-region] a,
+[data-tauri-drag-region] [data-no-drag] {
   -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
-/* Glass effect utility */
-.glass {
-  background: rgba(17, 24, 39, 0.75);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--color-border-subtle);
-}
+/* ------------------------------------------------------------------ */
+/* Animations                                                          */
+/* ------------------------------------------------------------------ */
 
-.glass-strong {
-  background: rgba(17, 24, 39, 0.9);
-  backdrop-filter: blur(24px);
-  border: 1px solid var(--color-border-default);
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }
-
-/* Glow effects */
-.glow-cyan {
-  box-shadow: 0 0 20px rgba(6, 182, 212, 0.2), 0 0 60px rgba(6, 182, 212, 0.1);
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }
-
-.glow-violet {
-  box-shadow: 0 0 20px rgba(139, 92, 246, 0.2), 0 0 60px rgba(139, 92, 246, 0.1);
+@keyframes gradient-rotate {
+  0% { --gradient-angle: 0deg; }
+  100% { --gradient-angle: 360deg; }
 }
-
-/* Animations */
-@keyframes pulse-glow {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
-}
-
-@keyframes fade-in {
-  from { opacity: 0; transform: translateY(8px); }
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
-
-@keyframes slide-in-right {
-  from { opacity: 0; transform: translateX(20px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
 @keyframes slide-in-left {
-  from { opacity: 0; transform: translateX(-20px); }
-  to { opacity: 1; transform: translateX(0); }
+  from { transform: translateX(-100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes connection-pulse {
+  0%, 100% { stroke-opacity: 0.3; }
+  50% { stroke-opacity: 0.8; }
 }
 
-.animate-fade-in {
-  animation: fade-in 0.2s ease-out;
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
 }
-
-.animate-slide-right {
-  animation: slide-in-right 0.25s ease-out;
+.animate-shimmer {
+  animation: shimmer 2s linear infinite;
+  background-size: 200% 100%;
 }
-
+.animate-fade-in-up {
+  animation: fade-in-up 0.3s ease-out both;
+}
 .animate-slide-left {
-  animation: slide-in-left 0.25s ease-out;
+  animation: slide-in-left 0.2s ease-out;
+}
+.animate-slide-right {
+  animation: slide-in-right 0.2s ease-out;
+}
+.animate-connection-pulse {
+  animation: connection-pulse 3s ease-in-out infinite;
 }
 
-/* Status indicator pulse */
-.status-pulse {
-  animation: pulse-glow 2s ease-in-out infinite;
+/* Stagger children */
+.stagger-children > * {
+  animation: fade-in-up 0.3s ease-out both;
+}
+.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2) { animation-delay: 40ms; }
+.stagger-children > *:nth-child(3) { animation-delay: 80ms; }
+.stagger-children > *:nth-child(4) { animation-delay: 120ms; }
+.stagger-children > *:nth-child(5) { animation-delay: 160ms; }
+.stagger-children > *:nth-child(6) { animation-delay: 200ms; }
+.stagger-children > *:nth-child(7) { animation-delay: 240ms; }
+.stagger-children > *:nth-child(8) { animation-delay: 280ms; }
+
+/* ------------------------------------------------------------------ */
+/* Dot grid background                                                 */
+/* ------------------------------------------------------------------ */
+
+.dot-grid {
+  background-image: radial-gradient(circle, oklch(0.22 0 0) 1px, transparent 1px);
+  background-size: 24px 24px;
 }
 
-/* Monaco overrides for dark theme */
-.monaco-editor, .monaco-editor-background, .monaco-editor .margin {
-  background-color: var(--color-bg-surface) !important;
+/* ------------------------------------------------------------------ */
+/* Gradient border (prompt bar focus ring)                              */
+/* ------------------------------------------------------------------ */
+
+.gradient-border {
+  position: relative;
+}
+.gradient-border::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--gradient-angle, 0deg),
+    oklch(0.65 0.18 160),
+    oklch(0.60 0.18 250),
+    oklch(0.65 0.22 330),
+    oklch(0.65 0.18 160)
+  );
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  -webkit-mask-composite: xor;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+.gradient-border:focus-within::before {
+  opacity: 1;
+  animation: gradient-rotate 3s linear infinite;
+}
+
+@property --gradient-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+/* ------------------------------------------------------------------ */
+/* xterm overrides                                                     */
+/* ------------------------------------------------------------------ */
+
+.xterm {
+  padding: 8px;
+}
+.xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: oklch(0.25 0 0);
+  border-radius: 3px;
 }

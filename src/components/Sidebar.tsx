@@ -1,447 +1,589 @@
-import { useState } from "react";
-import { useAppStore } from "../stores/appStore";
-import { spawnAgent, killAgent } from "../lib/agentManager";
-import type { AgentStatus, SwarmNode, CrossSpeakLink } from "../types";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import { useAppStore } from "@/stores/appStore";
+import { spawnAgent } from "@/lib/agentManager";
+import { cn, formatRelative, truncatePath, getNodeIcon, AgentIcon } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Plus,
+  ChevronRight,
+  Circle,
+  Activity,
+  FolderOpen,
+  Trash2,
+  Power,
+  MessageSquare,
+  GitBranch,
+  Zap,
+  Link2,
+  X,
+} from "lucide-react";
+import type { AgentStatus, SwarmNode } from "@/types";
 
-const STATUS_DOT: Record<AgentStatus, string> = {
-  starting: "bg-accent-amber",
-  active: "bg-accent-cyan",
-  idle: "bg-text-muted",
-  error: "bg-accent-red",
-  stopped: "bg-bg-hover",
+const STATUS_CONFIG: Record<AgentStatus, { color: string; label: string }> = {
+  starting: { color: "bg-amber", label: "Starting" },
+  active: { color: "bg-emerald", label: "Active" },
+  idle: { color: "bg-sky", label: "Idle" },
+  error: { color: "bg-rose", label: "Error" },
+  stopped: { color: "bg-muted-foreground", label: "Stopped" },
 };
 
 export default function Sidebar() {
+  const sidebarView = useAppStore((s) => s.sidebarView);
+  const setSidebarView = useAppStore((s) => s.setSidebarView);
+
+  return (
+    <aside className="w-[260px] shrink-0 bg-sidebar border-r border-sidebar-border flex flex-col animate-slide-left">
+      {/* Manual tab switcher — avoids Base UI Tabs infinite loop */}
+      <div className="px-3 pt-3 pb-2">
+        <div className="flex h-8 rounded-lg bg-muted p-[3px]">
+          <button
+            onClick={() => setSidebarView("nodes")}
+            className={cn(
+              "flex-1 rounded-md text-xs font-medium transition-colors",
+              sidebarView === "nodes"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            Nodes
+          </button>
+          <button
+            onClick={() => setSidebarView("activity")}
+            className={cn(
+              "flex-1 rounded-md text-xs font-medium transition-colors",
+              sidebarView === "activity"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            Activity
+          </button>
+        </div>
+      </div>
+
+      <div className="h-px bg-border" />
+
+      {sidebarView === "nodes" ? <NodesView /> : <ActivityView />}
+    </aside>
+  );
+}
+
+/* ================================================================== */
+/* Nodes View                                                          */
+/* ================================================================== */
+
+function NodesView() {
   const nodes = useAppStore((s) => s.nodes);
   const agents = useAppStore((s) => s.agents);
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
-  const selectedAgentId = useAppStore((s) => s.selectedAgentId);
-  const createNode = useAppStore((s) => s.createNode);
-  const removeNode = useAppStore((s) => s.removeNode);
-  const addAgent = useAppStore((s) => s.addAgent);
-  const removeAgent = useAppStore((s) => s.removeAgent);
   const selectNode = useAppStore((s) => s.selectNode);
+  const [showCreateNode, setShowCreateNode] = useState(false);
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="px-3 py-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full h-8 text-xs justify-start gap-2 border-dashed border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
+          onClick={() => setShowCreateNode(true)}
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Create Node
+        </Button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto scrollbar-thin px-1.5">
+        <div className="space-y-0.5 pb-3 stagger-children">
+          {nodes.length === 0 ? (
+            <EmptyNodes onCreateClick={() => setShowCreateNode(true)} />
+          ) : (
+            nodes.map((node, i) => (
+              <NodeItem
+                key={node.id}
+                node={node}
+                agents={agents.filter((a) => a.nodeId === node.id)}
+                selected={selectedNodeId === node.id}
+                onSelect={() => selectNode(node.id)}
+                nodeIndex={i}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      {showCreateNode && (
+        <CreateNodeDialog onClose={() => setShowCreateNode(false)} />
+      )}
+    </div>
+  );
+}
+
+function EmptyNodes({ onCreateClick }: { onCreateClick: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
+      <div className="w-10 h-10 rounded-xl bg-secondary/50 flex items-center justify-center mb-3">
+        <FolderOpen className="w-5 h-5 text-muted-foreground" />
+      </div>
+      <p className="text-[13px] text-muted-foreground mb-1">No nodes yet</p>
+      <p className="text-[11px] text-muted-foreground/60 mb-4 leading-relaxed">
+        Create a node to start orchestrating agents
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        className="text-xs"
+        onClick={onCreateClick}
+      >
+        <Plus className="w-3.5 h-3.5 mr-1.5" />
+        Create Node
+      </Button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Single Node Item — manual expand/collapse, no Collapsible           */
+/* ------------------------------------------------------------------ */
+
+interface NodeItemProps {
+  node: SwarmNode;
+  agents: ReturnType<typeof useAppStore.getState>["agents"];
+  selected: boolean;
+  onSelect: () => void;
+  nodeIndex: number;
+}
+
+function NodeItem({ node, agents, selected, onSelect, nodeIndex }: NodeItemProps) {
+  const [expanded, setExpanded] = useState(true);
   const selectAgent = useAppStore((s) => s.selectAgent);
+  const removeNode = useAppStore((s) => s.removeNode);
+  const [showAddAgent, setShowAddAgent] = useState(false);
+  const activeCount = agents.filter((a) => a.status === "active").length;
 
-  const crossSpeakLinks = useAppStore((s) => s.crossSpeakLinks);
-  const addCrossSpeakLink = useAppStore((s) => s.addCrossSpeakLink);
-  const removeCrossSpeakLink = useAppStore((s) => s.removeCrossSpeakLink);
+  return (
+    <div>
+      <div
+        className={cn(
+          "rounded-lg transition-colors",
+          selected ? "bg-secondary/80" : "hover:bg-secondary/40"
+        )}
+      >
+        {/* Trigger — plain button, no Base UI Collapsible */}
+        <button
+          onClick={() => {
+            onSelect();
+            setExpanded((prev) => !prev);
+          }}
+          className="w-full flex items-center gap-2 px-2.5 py-2 text-left group"
+        >
+          <ChevronRight
+            className={cn(
+              "w-3 h-3 text-muted-foreground shrink-0 transition-transform duration-200",
+              expanded && "rotate-90"
+            )}
+          />
+          {(() => {
+            const NodeIcon = getNodeIcon(nodeIndex);
+            return <NodeIcon className="w-3.5 h-3.5 text-zinc-400 shrink-0" />;
+          })()}
+          <span className="text-[13px] font-medium text-foreground/90 truncate flex-1">
+            {node.name}
+          </span>
+          {agents.length > 0 && (
+            <Badge
+              variant="secondary"
+              className="h-4.5 px-1.5 text-[10px] font-mono tabular-nums"
+            >
+              {activeCount}/{agents.length}
+            </Badge>
+          )}
+        </button>
 
-  const [newNodeName, setNewNodeName] = useState("");
-  const [newNodeDir, setNewNodeDir] = useState("");
-  const [showNewNode, setShowNewNode] = useState(false);
-  const [showNewAgent, setShowNewAgent] = useState<string | null>(null);
-  const [newAgentName, setNewAgentName] = useState("");
-  const [newAgentCwd, setNewAgentCwd] = useState("");
-  const [newAgentTask, setNewAgentTask] = useState("");
-  const [showCrossSpeakFor, setShowCrossSpeakFor] = useState<string | null>(null);
+        {/* Content */}
+        {expanded && (
+          <div className="pl-7 pr-2 pb-2 space-y-0.5">
+            {/* Directory */}
+            <div
+              className="flex items-center gap-1.5 text-[10px] text-muted-foreground/70 font-mono px-1 py-0.5 truncate w-full"
+              title={node.directory}
+            >
+              <FolderOpen className="w-3 h-3 shrink-0" />
+              <span className="truncate">{truncatePath(node.directory, 28)}</span>
+            </div>
 
-  const handleCreateNode = () => {
-    if (!newNodeName.trim() || !newNodeDir.trim()) return;
-    const node = createNode(newNodeName.trim(), newNodeDir.trim());
-    setNewNodeName("");
-    setNewNodeDir("");
-    setShowNewNode(false);
-    selectNode(node.id);
+            {/* Agents */}
+            {agents.map((agent) => {
+              const status = STATUS_CONFIG[agent.status];
+              return (
+                <button
+                  key={agent.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    selectAgent(agent.id);
+                  }}
+                  className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/50 transition-colors"
+                >
+                  <span
+                    className={cn(
+                      "w-1.5 h-1.5 rounded-full shrink-0",
+                      status.color,
+                      agent.status === "active" && "animate-pulse-dot"
+                    )}
+                  />
+                  <AgentIcon className="w-3 h-3 text-muted-foreground shrink-0" />
+                  <span className="text-[12px] text-foreground/80 truncate flex-1">
+                    {agent.name}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground/50">
+                    {status.label}
+                  </span>
+                </button>
+              );
+            })}
+
+            {/* Actions */}
+            <div className="flex items-center gap-1 pt-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-[11px] text-muted-foreground hover:text-foreground px-2 gap-1"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowAddAgent(true);
+                }}
+              >
+                <Plus className="w-3 h-3" />
+                Agent
+              </Button>
+              <div className="flex-1" />
+              <button
+                className="inline-flex items-center justify-center h-6 w-6 p-0 rounded-md text-muted-foreground/40 hover:text-rose hover:bg-secondary/50 transition-colors"
+                title="Remove node"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeNode(node.id);
+                }}
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {showAddAgent && (
+        <AddAgentDialog
+          onClose={() => setShowAddAgent(false)}
+          node={node}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/* Activity View                                                       */
+/* ================================================================== */
+
+function ActivityView() {
+  const activityLog = useAppStore((s) => s.activityLog);
+
+  const typeIcon: Record<string, typeof Zap> = {
+    agent_spawn: Zap,
+    agent_stop: Power,
+    message: MessageSquare,
+    diff: GitBranch,
+    system: Activity,
+    cross_speak: Link2,
   };
 
-  const handleCreateAgent = async (nodeId: string) => {
-    if (!newAgentName.trim()) return;
-    const node = nodes.find((n) => n.id === nodeId);
-    const cwd = newAgentCwd.trim() || node?.directory || ".";
-    const name = newAgentName.trim();
-    const task = newAgentTask.trim() || undefined;
-    const agent = addAgent(nodeId, name, cwd);
-    setNewAgentName("");
-    setNewAgentCwd("");
-    setNewAgentTask("");
-    setShowNewAgent(null);
-    selectAgent(agent.id);
-
-    // Spawn the persistent Claude Code process
-    try {
-      await spawnAgent(agent.id, nodeId, name, cwd, task);
-    } catch (err) {
-      console.error("Failed to spawn agent:", err);
-    }
+  const typeColor: Record<string, string> = {
+    agent_spawn: "text-emerald",
+    agent_stop: "text-muted-foreground",
+    message: "text-sky",
+    diff: "text-amber",
+    system: "text-violet",
+    cross_speak: "text-cyan",
   };
 
   return (
-    <div className="w-64 h-full bg-bg-secondary border-r border-border-subtle flex flex-col shrink-0 animate-slide-left">
-      {/* Header */}
-      <div className="px-3 py-2.5 border-b border-border-subtle flex items-center justify-between">
-        <span className="text-xs font-medium text-text-secondary uppercase tracking-wider">
-          Nodes
-        </span>
-        <button
-          onClick={() => setShowNewNode(true)}
-          className="w-5 h-5 flex items-center justify-center rounded hover:bg-bg-hover transition-colors text-text-muted hover:text-accent-cyan text-lg leading-none"
-          title="Create node"
-        >
-          +
-        </button>
-      </div>
-
-      {/* New node form */}
-      {showNewNode && (
-        <div className="px-3 py-2 border-b border-border-subtle animate-fade-in">
-          <input
-            type="text"
-            value={newNodeName}
-            onChange={(e) => setNewNodeName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") setShowNewNode(false);
-            }}
-            placeholder="Node name..."
-            autoFocus
-            className="w-full px-2 py-1.5 text-xs bg-bg-primary border border-border-default rounded-md text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
-          />
-          <input
-            type="text"
-            value={newNodeDir}
-            onChange={(e) => setNewNodeDir(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleCreateNode();
-              if (e.key === "Escape") setShowNewNode(false);
-            }}
-            placeholder="Project directory (required)..."
-            className="w-full px-2 py-1.5 mt-1 text-xs bg-bg-primary border border-border-default rounded-md text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
-          />
-          <div className="flex gap-1.5 mt-1.5">
-            <button
-              onClick={handleCreateNode}
-              disabled={!newNodeName.trim() || !newNodeDir.trim()}
-              className="flex-1 px-2 py-1 text-xs rounded-md bg-accent-cyan/15 text-accent-cyan hover:bg-accent-cyan/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Create
-            </button>
-            <button
-              onClick={() => {
-                setShowNewNode(false);
-                setNewNodeName("");
-                setNewNodeDir("");
-              }}
-              className="px-2 py-1 text-xs rounded-md text-text-muted hover:bg-bg-hover transition-colors"
-            >
-              Cancel
-            </button>
+    <div className="flex-1 overflow-y-auto scrollbar-thin px-1.5">
+      <div className="space-y-0.5 py-2">
+        {activityLog.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <Activity className="w-5 h-5 text-muted-foreground/40 mb-2" />
+            <p className="text-[12px] text-muted-foreground/60">No activity yet</p>
           </div>
-        </div>
-      )}
-
-      {/* Node list */}
-      <div className="flex-1 overflow-y-auto">
-        {nodes.length === 0 && !showNewNode && (
-          <div className="px-3 py-6 text-center">
-            <p className="text-xs text-text-muted">No nodes yet</p>
-            <button
-              onClick={() => setShowNewNode(true)}
-              className="mt-2 text-xs text-accent-cyan hover:text-accent-cyan/80 transition-colors"
-            >
-              Create your first node
-            </button>
-          </div>
-        )}
-
-        {nodes.map((node) => {
-          const nodeAgents = agents.filter((a) => a.nodeId === node.id);
-          const isExpanded = selectedNodeId === node.id;
-
-          return (
-            <div key={node.id} className="border-b border-border-subtle/50">
-              {/* Node row */}
-              <button
-                onClick={() => selectNode(isExpanded ? null : node.id)}
-                className={`w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-bg-hover/50 transition-colors ${
-                  isExpanded ? "bg-bg-hover/30" : ""
-                }`}
+        ) : (
+          [...activityLog].reverse().map((event) => {
+            const Icon = typeIcon[event.type] ?? Circle;
+            const color = typeColor[event.type] ?? "text-muted-foreground";
+            return (
+              <div
+                key={event.id}
+                className="flex items-start gap-2 px-2.5 py-1.5 rounded-md hover:bg-secondary/30 transition-colors"
               >
-                <div
-                  className="w-2.5 h-2.5 rounded-sm shrink-0"
-                  style={{ backgroundColor: node.color }}
-                />
+                <Icon className={cn("w-3 h-3 mt-0.5 shrink-0", color)} />
                 <div className="flex-1 min-w-0">
-                  <span className="text-sm text-text-primary truncate block">
-                    {node.name}
-                  </span>
-                  <span className="text-[10px] text-text-muted truncate block" title={node.directory}>
-                    {node.directory}
-                  </span>
+                  <p className="text-[11px] text-foreground/75 leading-relaxed break-words">
+                    {event.text}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground/50 mt-0.5">
+                    {formatRelative(event.timestamp)}
+                  </p>
                 </div>
-                <span className="text-xs text-text-muted">{nodeAgents.length}</span>
-                <svg
-                  width="10"
-                  height="10"
-                  viewBox="0 0 10 10"
-                  className={`text-text-muted transition-transform ${
-                    isExpanded ? "rotate-90" : ""
-                  }`}
-                >
-                  <path d="M3 1L7 5L3 9" stroke="currentColor" strokeWidth="1.5" fill="none" />
-                </svg>
-              </button>
-
-              {/* Expanded: agents list */}
-              {isExpanded && (
-                <div className="animate-fade-in">
-                  {nodeAgents.map((agent) => (
-                    <button
-                      key={agent.id}
-                      onClick={() =>
-                        selectAgent(selectedAgentId === agent.id ? null : agent.id)
-                      }
-                      className={`w-full px-3 pl-7 py-1.5 flex items-center gap-2 text-left hover:bg-bg-hover/50 transition-colors ${
-                        selectedAgentId === agent.id ? "bg-bg-hover/40" : ""
-                      }`}
-                    >
-                      <div
-                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                          STATUS_DOT[agent.status]
-                        }`}
-                      />
-                      <span className="text-xs text-text-secondary truncate flex-1">
-                        {agent.name}
-                      </span>
-                      <span className="text-[10px] text-text-muted capitalize">
-                        {agent.status}
-                      </span>
-                    </button>
-                  ))}
-
-                  {/* Add agent button */}
-                  {showNewAgent === node.id ? (
-                    <div className="px-3 pl-7 py-2 animate-fade-in">
-                      <input
-                        type="text"
-                        value={newAgentName}
-                        onChange={(e) => setNewAgentName(e.target.value)}
-                        placeholder="Agent name..."
-                        autoFocus
-                        className="w-full px-2 py-1 text-xs bg-bg-primary border border-border-default rounded text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
-                      />
-                      <input
-                        type="text"
-                        value={newAgentCwd}
-                        onChange={(e) => setNewAgentCwd(e.target.value)}
-                        placeholder={`Working dir (default: ${node.directory})`}
-                        className="w-full px-2 py-1 mt-1 text-xs bg-bg-primary border border-border-default rounded text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50"
-                      />
-                      <textarea
-                        value={newAgentTask}
-                        onChange={(e) => setNewAgentTask(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            handleCreateAgent(node.id);
-                          }
-                          if (e.key === "Escape") setShowNewAgent(null);
-                        }}
-                        placeholder="Task description (optional)..."
-                        rows={2}
-                        className="w-full px-2 py-1 mt-1 text-xs bg-bg-primary border border-border-default rounded text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/50 resize-none"
-                      />
-                      <div className="flex gap-1.5 mt-1.5">
-                        <button
-                          onClick={() => handleCreateAgent(node.id)}
-                          className="flex-1 px-2 py-1 text-xs rounded bg-accent-cyan/15 text-accent-cyan hover:bg-accent-cyan/25 transition-colors"
-                        >
-                          Spawn
-                        </button>
-                        <button
-                          onClick={() => setShowNewAgent(null)}
-                          className="px-2 py-1 text-xs rounded text-text-muted hover:bg-bg-hover transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setShowNewAgent(node.id)}
-                      className="w-full px-3 pl-7 py-1.5 flex items-center gap-2 text-left text-xs text-text-muted hover:text-accent-cyan hover:bg-bg-hover/30 transition-colors"
-                    >
-                      <span>+</span>
-                      <span>Add agent</span>
-                    </button>
-                  )}
-
-                  {/* Cross-speak links */}
-                  <CrossSpeakSection
-                    node={node}
-                    allNodes={nodes}
-                    crossSpeakLinks={crossSpeakLinks}
-                    showCrossSpeakFor={showCrossSpeakFor}
-                    setShowCrossSpeakFor={setShowCrossSpeakFor}
-                    addCrossSpeakLink={addCrossSpeakLink}
-                    removeCrossSpeakLink={removeCrossSpeakLink}
-                  />
-
-                  {/* Remove node */}
-                  <button
-                    onClick={() => removeNode(node.id)}
-                    className="w-full px-3 pl-7 py-1.5 flex items-center gap-2 text-left text-xs text-text-muted hover:text-accent-red hover:bg-bg-hover/30 transition-colors"
-                  >
-                    <span className="text-[10px]">x</span>
-                    <span>Remove node</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
+              </div>
+            );
+          })
+        )}
       </div>
     </div>
   );
 }
 
-// --- Cross-speak section within a node's expanded view ---
+/* ================================================================== */
+/* Simple Modal                                                        */
+/* ================================================================== */
 
-function CrossSpeakSection({
-  node,
-  allNodes,
-  crossSpeakLinks,
-  showCrossSpeakFor,
-  setShowCrossSpeakFor,
-  addCrossSpeakLink,
-  removeCrossSpeakLink,
+function Modal({
+  children,
+  onClose,
 }: {
-  node: SwarmNode;
-  allNodes: SwarmNode[];
-  crossSpeakLinks: CrossSpeakLink[];
-  showCrossSpeakFor: string | null;
-  setShowCrossSpeakFor: (id: string | null) => void;
-  addCrossSpeakLink: (a: string, b: string) => void;
-  removeCrossSpeakLink: (id: string) => void;
+  children: React.ReactNode;
+  onClose: () => void;
 }) {
-  // Find nodes that share the same directory (auto-linked)
-  const sameDir = allNodes.filter(
-    (n) =>
-      n.id !== node.id &&
-      n.directory.replace(/[\\/]+$/, "").toLowerCase() ===
-        node.directory.replace(/[\\/]+$/, "").toLowerCase()
-  );
+  const backdropRef = useRef<HTMLDivElement>(null);
 
-  // Find explicit cross-speak links for this node
-  const nodeLinks = crossSpeakLinks.filter(
-    (l) => l.nodeA === node.id || l.nodeB === node.id
-  );
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleEsc);
+    return () => window.removeEventListener("keydown", handleEsc);
+  }, [onClose]);
 
-  // Nodes available to link (different directory, not already linked)
-  const linkedIds = new Set(
-    nodeLinks.map((l) => (l.nodeA === node.id ? l.nodeB : l.nodeA))
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div
+        ref={backdropRef}
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm animate-fade-in"
+        onClick={onClose}
+      />
+      <div className="relative z-10 w-full max-w-md mx-4 bg-card border border-border rounded-xl p-4 shadow-2xl animate-fade-in-up">
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
+        >
+          <X className="w-4 h-4" />
+        </button>
+        {children}
+      </div>
+    </div>,
+    document.body
   );
-  const sameDirIds = new Set(sameDir.map((n) => n.id));
-  const linkableNodes = allNodes.filter(
-    (n) =>
-      n.id !== node.id && !linkedIds.has(n.id) && !sameDirIds.has(n.id)
-  );
+}
 
-  const isOpen = showCrossSpeakFor === node.id;
+/* ================================================================== */
+/* Dialogs                                                             */
+/* ================================================================== */
+
+function CreateNodeDialog({ onClose }: { onClose: () => void }) {
+  const createNode = useAppStore((s) => s.createNode);
+  const addAgent = useAppStore((s) => s.addAgent);
+  const [name, setName] = useState("");
+  const [directory, setDirectory] = useState("");
+  const [task, setTask] = useState("");
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    nameRef.current?.focus();
+  }, []);
+
+  const handleCreate = useCallback(async () => {
+    if (!name.trim() || !directory.trim()) return;
+    const node = createNode(name.trim(), directory.trim());
+
+    // If a task is provided, auto-spawn a boss agent
+    if (task.trim()) {
+      const bossName = `${name.trim()}-lead`;
+      const agent = addAgent(node.id, bossName, directory.trim(), "boss");
+      try {
+        await spawnAgent(agent.id, node.id, bossName, directory.trim(), task.trim(), "boss", "opus");
+      } catch (err) {
+        console.error("Failed to spawn boss agent:", err);
+      }
+    }
+
+    setName("");
+    setDirectory("");
+    setTask("");
+    onClose();
+  }, [name, directory, task, createNode, addAgent, onClose]);
+
+  const pickFolder = useCallback(async () => {
+    try {
+      const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
+      const selected = await openDialog({ directory: true });
+      if (selected) setDirectory(selected as string);
+    } catch {
+      // Dialog not available in dev
+    }
+  }, []);
+
+  const hasTask = task.trim().length > 0;
 
   return (
-    <div className="px-3 pl-7 py-1">
-      {/* Auto-linked same-directory nodes */}
-      {sameDir.length > 0 && (
-        <div className="mb-1">
-          <span className="text-[10px] text-text-muted uppercase tracking-wider">
-            Auto-linked (same dir)
-          </span>
-          {sameDir.map((n) => (
-            <div
-              key={n.id}
-              className="flex items-center gap-1.5 py-0.5 text-[11px] text-accent-emerald"
+    <Modal onClose={onClose}>
+      <h3 className="text-sm font-semibold mb-4">Create Node</h3>
+      <div className="space-y-3">
+        <div className="space-y-1.5">
+          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            Name
+          </label>
+          <input
+            ref={nameRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. frontend-app"
+            className="flex h-8 w-full rounded-md border border-border bg-background px-3 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
+            onKeyDown={(e) => e.key === "Enter" && !hasTask && handleCreate()}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            Directory
+          </label>
+          <div className="flex gap-2">
+            <input
+              value={directory}
+              onChange={(e) => setDirectory(e.target.value)}
+              placeholder="/path/to/project"
+              className="flex h-8 w-full rounded-md border border-border bg-background px-3 text-[13px] font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
+              onKeyDown={(e) => e.key === "Enter" && !hasTask && handleCreate()}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 px-3 shrink-0"
+              onClick={pickFolder}
             >
-              <div
-                className="w-1.5 h-1.5 rounded-full shrink-0"
-                style={{ backgroundColor: n.color }}
-              />
-              <span className="truncate">{n.name}</span>
-            </div>
-          ))}
+              <FolderOpen className="w-3.5 h-3.5" />
+            </Button>
+          </div>
         </div>
-      )}
-
-      {/* Explicit cross-speak links */}
-      {nodeLinks.length > 0 && (
-        <div className="mb-1">
-          <span className="text-[10px] text-text-muted uppercase tracking-wider">
-            Cross-speak
-          </span>
-          {nodeLinks.map((link) => {
-            const otherId =
-              link.nodeA === node.id ? link.nodeB : link.nodeA;
-            const other = allNodes.find((n) => n.id === otherId);
-            if (!other) return null;
-            return (
-              <div
-                key={link.id}
-                className="flex items-center gap-1.5 py-0.5 text-[11px] text-accent-violet group"
-              >
-                <div
-                  className="w-1.5 h-1.5 rounded-full shrink-0"
-                  style={{ backgroundColor: other.color }}
-                />
-                <span className="truncate flex-1">{other.name}</span>
-                <button
-                  onClick={() => removeCrossSpeakLink(link.id)}
-                  className="text-[10px] text-text-muted opacity-0 group-hover:opacity-100 hover:text-accent-red transition-all"
-                  title="Remove cross-speak link"
-                >
-                  x
-                </button>
-              </div>
-            );
-          })}
+        <div className="space-y-1.5">
+          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            Initial Task
+            <span className="normal-case tracking-normal font-normal text-muted-foreground/40 ml-1">(optional)</span>
+          </label>
+          <textarea
+            value={task}
+            onChange={(e) => setTask(e.target.value)}
+            placeholder="Describe what this node should accomplish. A lead agent will analyze the task and spawn sub-agents automatically..."
+            rows={3}
+            className="flex w-full rounded-md border border-border bg-background px-3 py-2 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring resize-none leading-relaxed"
+          />
         </div>
-      )}
-
-      {/* Toggle to add cross-speak */}
-      {isOpen ? (
-        <div className="animate-fade-in">
-          <span className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">
-            Link to node
-          </span>
-          {linkableNodes.length === 0 ? (
-            <span className="text-[10px] text-text-muted">
-              No other nodes available
-            </span>
-          ) : (
-            linkableNodes.map((n) => (
-              <button
-                key={n.id}
-                onClick={() => {
-                  addCrossSpeakLink(node.id, n.id);
-                  setShowCrossSpeakFor(null);
-                }}
-                className="w-full flex items-center gap-1.5 py-0.5 text-[11px] text-text-secondary hover:text-accent-violet transition-colors text-left"
-              >
-                <div
-                  className="w-1.5 h-1.5 rounded-full shrink-0"
-                  style={{ backgroundColor: n.color }}
-                />
-                <span className="truncate flex-1">{n.name}</span>
-                <span className="text-[10px] text-text-muted truncate max-w-[80px]">
-                  {n.directory.split(/[\\/]/).pop()}
-                </span>
-              </button>
-            ))
+      </div>
+      <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-border/50">
+        <Button variant="ghost" size="sm" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          onClick={handleCreate}
+          disabled={!name.trim() || !directory.trim()}
+          className={cn(
+            "text-white",
+            hasTask
+              ? "bg-violet hover:bg-violet/90"
+              : "bg-emerald hover:bg-emerald/90"
           )}
-          <button
-            onClick={() => setShowCrossSpeakFor(null)}
-            className="mt-1 text-[10px] text-text-muted hover:text-text-secondary transition-colors"
-          >
-            Cancel
-          </button>
-        </div>
-      ) : (
-        <button
-          onClick={() => setShowCrossSpeakFor(node.id)}
-          className="w-full py-0.5 flex items-center gap-2 text-left text-[11px] text-text-muted hover:text-accent-violet hover:bg-bg-hover/30 transition-colors"
         >
-          <span>+</span>
-          <span>Link cross-speak</span>
-        </button>
-      )}
-    </div>
+          {hasTask ? "Create & Deploy" : "Create"}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+function AddAgentDialog({
+  onClose,
+  node,
+}: {
+  onClose: () => void;
+  node: SwarmNode;
+}) {
+  const addAgent = useAppStore((s) => s.addAgent);
+  const [name, setName] = useState("");
+  const [task, setTask] = useState("");
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    nameRef.current?.focus();
+  }, []);
+
+  const handleCreate = useCallback(async () => {
+    if (!name.trim()) return;
+    const agent = addAgent(node.id, name.trim(), node.directory);
+    try {
+      await spawnAgent(agent.id, node.id, name.trim(), node.directory, task || undefined);
+    } catch (err) {
+      console.error("Failed to spawn agent:", err);
+    }
+    setName("");
+    setTask("");
+    onClose();
+  }, [name, task, node, addAgent, onClose]);
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="text-sm font-semibold mb-4">
+        Add Agent to {node.name}
+      </h3>
+      <div className="space-y-3">
+        <div className="space-y-1.5">
+          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            Agent Name
+          </label>
+          <input
+            ref={nameRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. code-reviewer"
+            className="flex h-8 w-full rounded-md border border-border bg-background px-3 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
+            onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            Initial Task (optional)
+          </label>
+          <input
+            value={task}
+            onChange={(e) => setTask(e.target.value)}
+            placeholder="What should this agent do?"
+            className="flex h-8 w-full rounded-md border border-border bg-background px-3 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
+            onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+          />
+        </div>
+      </div>
+      <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-border/50">
+        <Button variant="ghost" size="sm" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          onClick={handleCreate}
+          disabled={!name.trim()}
+          className="bg-emerald text-white hover:bg-emerald/90"
+        >
+          Spawn Agent
+        </Button>
+      </div>
+    </Modal>
   );
 }

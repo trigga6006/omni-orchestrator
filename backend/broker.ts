@@ -29,6 +29,9 @@ import type {
   CreateNodeRequest,
   DeleteNodeRequest,
   AssignNodeRequest,
+  SpawnAgentRequest,
+  AddCrossSpeakLinkRequest,
+  RemoveCrossSpeakLinkRequest,
   WsEvent,
 } from "./shared/types.ts";
 
@@ -78,6 +81,17 @@ db.run(`
   )
 `);
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS crossspeak_links (
+    id TEXT PRIMARY KEY,
+    node_a TEXT NOT NULL,
+    node_b TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (node_a) REFERENCES nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (node_b) REFERENCES nodes(id) ON DELETE CASCADE
+  )
+`);
+
 // ---- Prepared statements ----
 
 const insertPeer = db.prepare(
@@ -107,14 +121,29 @@ const insertNode = db.prepare(
 const deleteNode = db.prepare(`DELETE FROM nodes WHERE id = ?`);
 const selectAllNodes = db.prepare(`SELECT * FROM nodes`);
 
-// ---- Stale peer cleanup ----
+const insertCrossSpeakLink = db.prepare(
+  `INSERT OR IGNORE INTO crossspeak_links (id, node_a, node_b, created_at) VALUES (?, ?, ?, ?)`
+);
+const deleteCrossSpeakLink = db.prepare(`DELETE FROM crossspeak_links WHERE id = ?`);
+const selectAllCrossSpeakLinks = db.prepare(`SELECT * FROM crossspeak_links`);
+const selectCrossSpeakLink = db.prepare(
+  `SELECT id FROM crossspeak_links WHERE (node_a = ? AND node_b = ?) OR (node_a = ? AND node_b = ?)`
+);
+
+// ---- Stale peer cleanup (heartbeat-based) ----
+
+const STALE_THRESHOLD_MS = 60_000; // 60s without heartbeat = stale
 
 function cleanStalePeers() {
-  const peers = db.query("SELECT id, pid FROM peers").all() as { id: string; pid: number }[];
+  const now = Date.now();
+  const peers = db.query("SELECT id, pid, last_seen FROM peers").all() as {
+    id: string;
+    pid: number;
+    last_seen: string;
+  }[];
   for (const peer of peers) {
-    try {
-      process.kill(peer.pid, 0);
-    } catch {
+    const lastSeen = new Date(peer.last_seen).getTime();
+    if (now - lastSeen > STALE_THRESHOLD_MS) {
       deletePeer.run(peer.id);
       db.run("DELETE FROM messages WHERE to_id = ? AND delivered = 0", [peer.id]);
       broadcast({ type: "peer_unregistered", peer_id: peer.id });
@@ -155,12 +184,14 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
   const id = genId();
   const now = new Date().toISOString();
 
-  // Remove existing registration for this PID
-  const existing = db.query("SELECT id FROM peers WHERE pid = ?").get(body.pid) as {
-    id: string;
-  } | null;
-  if (existing) {
-    deletePeer.run(existing.id);
+  // Remove existing registration for this PID (skip for PID 0, used by UI-managed agents)
+  if (body.pid > 0) {
+    const existing = db.query("SELECT id FROM peers WHERE pid = ?").get(body.pid) as {
+      id: string;
+    } | null;
+    if (existing) {
+      deletePeer.run(existing.id);
+    }
   }
 
   insertPeer.run(
@@ -224,23 +255,40 @@ function handleListPeers(body: ListPeersRequest): Peer[] {
     peers = peers.filter((p) => p.id !== body.exclude_id);
   }
 
-  // Verify alive (Windows-compatible: try/catch on process.kill)
+  // Filter to peers that have sent a heartbeat within the threshold
+  const now = Date.now();
   return peers.filter((p) => {
-    try {
-      process.kill(p.pid, 0);
-      return true;
-    } catch {
-      deletePeer.run(p.id);
-      return false;
-    }
+    const lastSeen = new Date(p.last_seen).getTime();
+    return now - lastSeen <= STALE_THRESHOLD_MS;
   });
 }
 
 function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: string } {
-  const target = db.query("SELECT id FROM peers WHERE id = ?").get(body.to_id) as {
+  const target = db.query("SELECT id, node_id FROM peers WHERE id = ?").get(body.to_id) as {
     id: string;
+    node_id: string | null;
   } | null;
   if (!target) return { ok: false, error: `Peer ${body.to_id} not found` };
+
+  // Enforce node isolation (skip for user-routed messages)
+  if (body.from_id !== "user") {
+    const sender = db.query("SELECT id, node_id FROM peers WHERE id = ?").get(body.from_id) as {
+      id: string;
+      node_id: string | null;
+    } | null;
+
+    if (sender && sender.node_id && target.node_id && sender.node_id !== target.node_id) {
+      const link = selectCrossSpeakLink.get(
+        sender.node_id, target.node_id, target.node_id, sender.node_id
+      );
+      if (!link) {
+        return {
+          ok: false,
+          error: `Blocked: no cross-speak link between nodes ${sender.node_id} and ${target.node_id}`,
+        };
+      }
+    }
+  }
 
   const now = new Date().toISOString();
   insertMessage.run(body.from_id, body.to_id, body.text, now);
@@ -275,8 +323,14 @@ function handleBroadcast(body: BroadcastRequest): { ok: boolean; sent_to: number
 }
 
 function handlePollMessages(body: PollMessagesRequest): PollMessagesResponse {
-  const messages = selectUndelivered.all(body.id) as Message[];
-  for (const msg of messages) markDelivered.run(msg.id);
+  // Atomic: select + mark delivered in a single transaction to prevent
+  // race conditions when triggerImmediatePoll and the regular 5s poll
+  // both hit the broker concurrently.
+  const messages = db.transaction(() => {
+    const msgs = selectUndelivered.all(body.id) as Message[];
+    for (const msg of msgs) markDelivered.run(msg.id);
+    return msgs;
+  })();
   return { messages };
 }
 
@@ -287,10 +341,14 @@ function handleUnregister(body: { id: string }): void {
 
 // ---- Node handlers ----
 
-function handleCreateNode(body: CreateNodeRequest): SwarmNode {
-  const id = genId();
+function handleCreateNode(body: CreateNodeRequest & { id?: string }): SwarmNode {
+  const id = body.id ?? genId();
   const now = new Date().toISOString();
-  insertNode.run(id, body.name, body.color, now);
+  // Upsert: if the node already exists (re-registration), skip
+  const existing = db.query("SELECT id FROM nodes WHERE id = ?").get(id);
+  if (!existing) {
+    insertNode.run(id, body.name, body.color, now);
+  }
   const node: SwarmNode = { id, name: body.name, color: body.color, created_at: now };
   broadcast({ type: "node_created", node });
   return node;
@@ -307,10 +365,24 @@ function handleAssignNode(body: AssignNodeRequest): void {
   broadcast({ type: "peer_assigned", peer_id: body.peer_id, node_id: body.node_id });
 }
 
+function handleAddCrossSpeakLink(body: AddCrossSpeakLinkRequest): { ok: boolean } {
+  const now = new Date().toISOString();
+  insertCrossSpeakLink.run(body.id, body.node_a, body.node_b, now);
+  broadcast({ type: "crossspeak_link_added", id: body.id, node_a: body.node_a, node_b: body.node_b });
+  return { ok: true };
+}
+
+function handleRemoveCrossSpeakLink(body: RemoveCrossSpeakLinkRequest): { ok: boolean } {
+  deleteCrossSpeakLink.run(body.id);
+  broadcast({ type: "crossspeak_link_removed", id: body.id });
+  return { ok: true };
+}
+
 function handleSync(): WsEvent {
   const peers = selectAllPeers.all() as Peer[];
   const nodes = selectAllNodes.all() as SwarmNode[];
-  return { type: "sync_state", peers, nodes, peer_count: peers.length };
+  const crossspeak_links = selectAllCrossSpeakLinks.all() as { id: string; node_a: string; node_b: string; created_at: string }[];
+  return { type: "sync_state", peers, nodes, peer_count: peers.length, crossspeak_links };
 }
 
 // ---- Diff handler ----
@@ -406,15 +478,14 @@ function handleRouteMessage(body: {
     peers = selectAllPeers.all() as Peer[];
   }
 
-  // Filter to alive peers only
-  peers = peers.filter((p) => {
-    try {
-      process.kill(p.pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  });
+  // Filter to peers that have sent a heartbeat within the threshold
+  {
+    const cutoff = Date.now();
+    peers = peers.filter((p) => {
+      const lastSeen = new Date(p.last_seen).getTime();
+      return cutoff - lastSeen <= STALE_THRESHOLD_MS;
+    });
+  }
 
   if (peers.length === 0) {
     return { ok: false, error: "No active agents available" };
@@ -447,17 +518,55 @@ function handleRouteMessage(body: {
   }
 
   // Send the message to the chosen peer
-  const now = new Date().toISOString();
-  insertMessage.run("user", bestPeer.id, body.text, now);
+  const sentAt = new Date().toISOString();
+  insertMessage.run("user", bestPeer.id, body.text, sentAt);
   broadcast({
     type: "message_sent",
     from_id: "user",
     to_id: bestPeer.id,
     text: body.text,
-    sent_at: now,
+    sent_at: sentAt,
   });
 
   return { ok: true, routed_to: bestPeer.summary || bestPeer.id, peer_id: bestPeer.id };
+}
+
+// ---- Spawn-agent handler (boss agents request sub-agent creation) ----
+
+const spawnRateMap = new Map<string, { count: number; resetAt: number }>();
+
+function handleSpawnAgent(
+  body: SpawnAgentRequest
+): { ok: boolean; error?: string } {
+  // Validate node exists
+  const node = db.query("SELECT id FROM nodes WHERE id = ?").get(body.node_id) as {
+    id: string;
+  } | null;
+  if (!node) return { ok: false, error: `Node ${body.node_id} not found` };
+
+  // Rate limit: max 10 spawns per node per 60s
+  const now = Date.now();
+  const rate = spawnRateMap.get(body.node_id);
+  if (rate && now < rate.resetAt) {
+    if (rate.count >= 10) {
+      return { ok: false, error: "Rate limit: max 10 agent spawns per node per minute" };
+    }
+    rate.count++;
+  } else {
+    spawnRateMap.set(body.node_id, { count: 1, resetAt: now + 60_000 });
+  }
+
+  // Broadcast to UI clients — the frontend will handle actual PTY spawning
+  broadcast({
+    type: "spawn_request",
+    node_id: body.node_id,
+    name: body.name,
+    task: body.task,
+    model: body.model,
+    requester_peer_id: body.requester_peer_id,
+  });
+
+  return { ok: true };
 }
 
 // ---- HTTP + WebSocket Server ----
@@ -554,6 +663,15 @@ Bun.serve({
           break;
         case "/route-message":
           result = handleRouteMessage(body);
+          break;
+        case "/spawn-agent":
+          result = handleSpawnAgent(body);
+          break;
+        case "/add-crossspeak-link":
+          result = handleAddCrossSpeakLink(body);
+          break;
+        case "/remove-crossspeak-link":
+          result = handleRemoveCrossSpeakLink(body);
           break;
         default:
           return Response.json({ error: "not found" }, { status: 404, headers: corsHeaders });

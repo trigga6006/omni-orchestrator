@@ -123,6 +123,38 @@ export async function deleteNodeOnBroker(id: string): Promise<void> {
   await post("/delete-node", { id });
 }
 
+// ---- Agent spawning ----
+
+export async function spawnAgentOnBroker(
+  nodeId: string,
+  name: string,
+  task: string,
+  requesterPeerId?: string
+): Promise<{ ok: boolean; error?: string }> {
+  return post("/spawn-agent", {
+    node_id: nodeId,
+    name,
+    task,
+    requester_peer_id: requesterPeerId,
+  });
+}
+
+// ---- Cross-speak links ----
+
+export async function addCrossSpeakLinkOnBroker(
+  id: string,
+  nodeA: string,
+  nodeB: string
+): Promise<{ ok: boolean }> {
+  return post("/add-crossspeak-link", { id, node_a: nodeA, node_b: nodeB });
+}
+
+export async function removeCrossSpeakLinkOnBroker(
+  id: string
+): Promise<{ ok: boolean }> {
+  return post("/remove-crossspeak-link", { id });
+}
+
 // ---- Queries ----
 
 export async function listPeers(): Promise<unknown[]> {
