@@ -100,6 +100,24 @@ export interface AssignNodeRequest {
   node_id: string | null;
 }
 
+export interface AddCrossSpeakLinkRequest {
+  id: string;
+  node_a: string;
+  node_b: string;
+}
+
+export interface RemoveCrossSpeakLinkRequest {
+  id: string;
+}
+
+export interface SpawnAgentRequest {
+  node_id: string;
+  name: string;
+  task: string;
+  model?: string; // "opus", "sonnet", "haiku" — passed to claude --model
+  requester_peer_id?: PeerId; // boss agent's peer ID (so sub-agents know who to report to)
+}
+
 // ---- WebSocket events (broker -> UI) ----
 
 export type WsEvent =
@@ -111,4 +129,7 @@ export type WsEvent =
   | { type: "node_created"; node: SwarmNode }
   | { type: "node_deleted"; node_id: string }
   | { type: "peer_assigned"; peer_id: PeerId; node_id: string | null }
-  | { type: "sync_state"; peers: Peer[]; nodes: SwarmNode[]; peer_count: number };
+  | { type: "sync_state"; peers: Peer[]; nodes: SwarmNode[]; peer_count: number; crossspeak_links?: { id: string; node_a: string; node_b: string; created_at: string }[] }
+  | { type: "spawn_request"; node_id: string; name: string; task: string; model?: string; requester_peer_id?: PeerId }
+  | { type: "crossspeak_link_added"; id: string; node_a: string; node_b: string }
+  | { type: "crossspeak_link_removed"; id: string };

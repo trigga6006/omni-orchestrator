@@ -1,4 +1,16 @@
 export type AgentStatus = "starting" | "active" | "idle" | "error" | "stopped";
+export type AgentRole = "boss" | "worker";
+export type AgentModel = "opus" | "sonnet" | "haiku";
+export type PermissionMode = "auto" | "interactive";
+
+export interface AgentConfig {
+  model: AgentModel;
+  permissionMode: PermissionMode;
+  maxTurns: number | null;       // null = unlimited
+  customSystemPrompt: string;    // additional instructions appended to system prompt
+  allowedTools: string[];        // tool whitelist — empty = all tools allowed
+  disallowedTools: string[];     // tool blocklist
+}
 
 export interface SwarmNode {
   id: string;
@@ -22,6 +34,7 @@ export interface Agent {
   peerId: string | null; // from broker, once registered
   nodeId: string;
   name: string;
+  role: AgentRole;
   status: AgentStatus;
   summary: string;
   cwd: string;
@@ -29,6 +42,7 @@ export interface Agent {
   messages: AgentMessage[];
   diff: DiffEntry | null;
   diffs: DiffEntry[];     // all changed files
+  config: AgentConfig;
   createdAt: string;
   lastSeen: string;
 }
