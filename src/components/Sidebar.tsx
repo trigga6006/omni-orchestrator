@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useAppStore } from "@/stores/appStore";
-import { spawnAgent } from "@/lib/agentManager";
-import { cn, formatRelative, truncatePath, getNodeIcon, AgentIcon } from "@/lib/utils";
+import { spawnAgent, killAgentsForNode, resumeAgent, resumeAllAgents } from "@/lib/agentManager";
+import { cn, formatRelative, truncatePath, getNodeIcon } from "@/lib/utils";
+import PixelAvatar from "@/components/PixelAvatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -18,7 +19,11 @@ import {
   Zap,
   Link2,
   X,
+  Sparkles,
+  Loader2,
+  Play,
 } from "lucide-react";
+import { requestRewrite } from "@/lib/concierge";
 import type { AgentStatus, SwarmNode } from "@/types";
 
 const STATUS_CONFIG: Record<AgentStatus, { color: string; label: string }> = {
@@ -27,6 +32,7 @@ const STATUS_CONFIG: Record<AgentStatus, { color: string; label: string }> = {
   idle: { color: "bg-sky", label: "Idle" },
   error: { color: "bg-rose", label: "Error" },
   stopped: { color: "bg-muted-foreground", label: "Stopped" },
+  suspended: { color: "bg-violet", label: "Suspended" },
 };
 
 export default function Sidebar() {
@@ -80,10 +86,11 @@ function NodesView() {
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const selectNode = useAppStore((s) => s.selectNode);
   const [showCreateNode, setShowCreateNode] = useState(false);
+  const hasSuspended = agents.some((a) => a.status === "suspended" && a.sessionId);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="px-3 py-2">
+      <div className="px-3 py-2 space-y-1.5">
         <Button
           variant="outline"
           size="sm"
@@ -93,6 +100,17 @@ function NodesView() {
           <Plus className="w-3.5 h-3.5" />
           Create Node
         </Button>
+        {hasSuspended && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full h-8 text-xs justify-start gap-2 border-violet/40 text-violet hover:text-violet hover:bg-violet/10 hover:border-violet/60"
+            onClick={() => resumeAllAgents()}
+          >
+            <Play className="w-3.5 h-3.5" />
+            Resume All Agents
+          </Button>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto scrollbar-thin px-1.5">
@@ -226,20 +244,25 @@ function NodeItem({ node, agents, selected, onSelect, nodeIndex }: NodeItemProps
                   }}
                   className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/50 transition-colors"
                 >
-                  <span
-                    className={cn(
-                      "w-1.5 h-1.5 rounded-full shrink-0",
-                      status.color,
-                      agent.status === "active" && "animate-pulse-dot"
-                    )}
-                  />
-                  <AgentIcon className="w-3 h-3 text-muted-foreground shrink-0" />
+                  <PixelAvatar color={node.color} size={10} active={agent.status === "active"} />
                   <span className="text-[12px] text-foreground/80 truncate flex-1">
                     {agent.name}
                   </span>
                   <span className="text-[10px] text-muted-foreground/50">
                     {status.label}
                   </span>
+                  {agent.status === "suspended" && agent.sessionId && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        resumeAgent(agent.id, agent.nodeId, agent.name, agent.cwd, agent.sessionId!, agent.role, agent.config.model);
+                      }}
+                      className="p-0.5 rounded text-violet/60 hover:text-violet hover:bg-violet/10 transition-colors"
+                      title="Resume agent"
+                    >
+                      <Play className="w-3 h-3" />
+                    </button>
+                  )}
                 </button>
               );
             })}
@@ -264,7 +287,7 @@ function NodeItem({ node, agents, selected, onSelect, nodeIndex }: NodeItemProps
                 title="Remove node"
                 onClick={(e) => {
                   e.stopPropagation();
-                  removeNode(node.id);
+                  killAgentsForNode(node.id).then(() => removeNode(node.id));
                 }}
               >
                 <Trash2 className="w-3 h-3" />
@@ -393,9 +416,12 @@ function Modal({
 function CreateNodeDialog({ onClose }: { onClose: () => void }) {
   const createNode = useAppStore((s) => s.createNode);
   const addAgent = useAppStore((s) => s.addAgent);
+  const conciergeStatus = useAppStore((s) => s.conciergeStatus);
   const [name, setName] = useState("");
   const [directory, setDirectory] = useState("");
   const [task, setTask] = useState("");
+  const [isRewriting, setIsRewriting] = useState(false);
+  const [creating, setCreating] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -403,25 +429,30 @@ function CreateNodeDialog({ onClose }: { onClose: () => void }) {
   }, []);
 
   const handleCreate = useCallback(async () => {
-    if (!name.trim() || !directory.trim()) return;
-    const node = createNode(name.trim(), directory.trim());
+    if (!name.trim() || !directory.trim() || creating) return;
+    setCreating(true);
+    try {
+      const node = createNode(name.trim(), directory.trim());
 
-    // If a task is provided, auto-spawn a boss agent
-    if (task.trim()) {
-      const bossName = `${name.trim()}-lead`;
-      const agent = addAgent(node.id, bossName, directory.trim(), "boss");
-      try {
-        await spawnAgent(agent.id, node.id, bossName, directory.trim(), task.trim(), "boss", "opus");
-      } catch (err) {
-        console.error("Failed to spawn boss agent:", err);
+      // If a task is provided, auto-spawn a boss agent
+      if (task.trim()) {
+        const bossName = `${name.trim()}-lead`;
+        const agent = addAgent(node.id, bossName, directory.trim(), "boss");
+        try {
+          await spawnAgent(agent.id, node.id, bossName, directory.trim(), task.trim(), "boss", "opus");
+        } catch (err) {
+          console.error("Failed to spawn boss agent:", err);
+        }
       }
-    }
 
-    setName("");
-    setDirectory("");
-    setTask("");
-    onClose();
-  }, [name, directory, task, createNode, addAgent, onClose]);
+      setName("");
+      setDirectory("");
+      setTask("");
+      onClose();
+    } finally {
+      setCreating(false);
+    }
+  }, [name, directory, task, creating, createNode, addAgent, onClose]);
 
   const pickFolder = useCallback(async () => {
     try {
@@ -479,13 +510,39 @@ function CreateNodeDialog({ onClose }: { onClose: () => void }) {
             Initial Task
             <span className="normal-case tracking-normal font-normal text-muted-foreground/40 ml-1">(optional)</span>
           </label>
-          <textarea
-            value={task}
-            onChange={(e) => setTask(e.target.value)}
-            placeholder="Describe what this node should accomplish. A lead agent will analyze the task and spawn sub-agents automatically..."
-            rows={3}
-            className="flex w-full rounded-md border border-border bg-background px-3 py-2 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring resize-none leading-relaxed"
-          />
+          <div className="relative">
+            <textarea
+              value={task}
+              onChange={(e) => setTask(e.target.value)}
+              placeholder="Describe what this node should accomplish. A lead agent will analyze the task and spawn sub-agents automatically..."
+              rows={3}
+              className="flex w-full rounded-md border border-border bg-background px-3 py-2 pr-8 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring resize-none leading-relaxed"
+            />
+            {task.trim() && (
+              <button
+                onClick={async () => {
+                  if (isRewriting || conciergeStatus !== "ready") return;
+                  setIsRewriting(true);
+                  try {
+                    const rewritten = await requestRewrite(task.trim());
+                    setTask(rewritten);
+                  } finally {
+                    setIsRewriting(false);
+                  }
+                }}
+                disabled={isRewriting || conciergeStatus !== "ready"}
+                className={cn(
+                  "absolute top-1.5 right-1.5 p-1 rounded transition-colors",
+                  conciergeStatus === "ready"
+                    ? "text-violet/40 hover:text-violet hover:bg-violet/10"
+                    : "text-violet/20 cursor-not-allowed"
+                )}
+                title={conciergeStatus === "ready" ? "Rewrite with Concierge" : "Concierge is not ready"}
+              >
+                {isRewriting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+              </button>
+            )}
+          </div>
         </div>
       </div>
       <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-border/50">

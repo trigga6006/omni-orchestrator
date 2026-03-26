@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Claude Swarm — Extended Broker
+ * Omniforge — Extended Broker
  *
  * Extends the claude-peers-mcp broker with:
  * - Swarm nodes (logical groups of agents)
@@ -38,7 +38,7 @@ import type {
 const PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
 const DB_PATH =
   process.env.CLAUDE_PEERS_DB ??
-  `${process.env.HOME ?? process.env.USERPROFILE}/.claude-swarm.db`;
+  `${process.env.HOME ?? process.env.USERPROFILE}/.omniforge.db`;
 
 // ---- Database ----
 
@@ -612,7 +612,7 @@ Bun.serve({
       if (url.pathname === "/peers") {
         return Response.json(selectAllPeers.all(), { headers: corsHeaders });
       }
-      return new Response("claude-swarm broker", { status: 200, headers: corsHeaders });
+      return new Response("omniforge broker", { status: 200, headers: corsHeaders });
     }
 
     try {
@@ -706,4 +706,4 @@ Bun.serve({
   },
 });
 
-console.error(`[claude-swarm broker] listening on 127.0.0.1:${PORT} (db: ${DB_PATH})`);
+console.error(`[omniforge broker] listening on 127.0.0.1:${PORT} (db: ${DB_PATH})`);

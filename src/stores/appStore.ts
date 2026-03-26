@@ -15,6 +15,9 @@ import type {
   DiffEntry,
   CrossSpeakLink,
   ActivityEvent,
+  ConciergeStatus,
+  ConciergeMessage,
+  PermissionPrompt,
 } from "../types";
 
 function defaultAgentConfig(role: AgentRole): AgentConfig {
@@ -41,6 +44,7 @@ const NODE_COLORS = [
 
 interface SwarmSettings {
   autoSendMessages: boolean; // auto-press Enter after injecting peer messages
+  nickname: string; // user nickname shown on welcome screen
 }
 
 interface AppState {
@@ -58,7 +62,7 @@ interface AppState {
   clearNodeNotifications: (nodeId: string) => void;
 
   // UI state
-  currentView: "welcome" | "orchestrator";
+  currentView: "welcome" | "orchestrator" | "settings";
   selectedNodeId: string | null;
   selectedAgentId: string | null;
   showDiffFor: string | null; // agent ID to show diff panel
@@ -66,6 +70,7 @@ interface AppState {
   sidebarView: "nodes" | "activity";
   rightDrawerOpen: boolean;
   panelView: "chat" | "swarm" | "diff" | "info";
+  conciergeSidebarOpen: boolean;
 
   // Drag-to-connect state
   dragging: { fromNodeId: string; cursorX: number; cursorY: number } | null;
@@ -85,12 +90,13 @@ interface AppState {
   canNodesCommunicate: (nodeIdA: string, nodeIdB: string) => boolean;
 
   // Actions - Agents
-  addAgent: (nodeId: string, name: string, cwd: string, role?: AgentRole) => Agent;
+  addAgent: (nodeId: string, name: string, cwd: string, role?: AgentRole, id?: string) => Agent;
   removeAgent: (id: string) => void;
   updateAgentStatus: (id: string, status: AgentStatus) => void;
   updateAgentSummary: (id: string, summary: string) => void;
   updateAgentPeerId: (id: string, peerId: string) => void;
   updateAgentPid: (id: string, pid: number) => void;
+  updateAgentSessionId: (id: string, sessionId: string) => void;
   addAgentMessage: (agentId: string, message: AgentMessage) => void;
   setAgentDiff: (agentId: string, diff: DiffEntry | null) => void;
   setAgentDiffs: (agentId: string, diffs: DiffEntry[]) => void;
@@ -112,6 +118,36 @@ interface AppState {
   openConnectionMenu: (nodeId: string, x: number, y: number) => void;
   closeConnectionMenu: () => void;
 
+  // Permission prompts
+  pendingPermissions: PermissionPrompt[];
+  addPermission: (prompt: PermissionPrompt) => void;
+  removePermission: (id: string) => void;
+  clearPermissionsForAgent: (agentId: string) => void;
+
+  // Concierge
+  conciergeStatus: ConciergeStatus;
+  conciergeMessages: ConciergeMessage[];
+  setConciergeStatus: (status: ConciergeStatus) => void;
+  addConciergeMessage: (msg: Omit<ConciergeMessage, "id" | "timestamp">) => void;
+  clearConciergeMessages: () => void;
+
+  // Workspace persistence
+  currentWorkspaceName: string | null;
+  currentWorkspacePath: string | null;
+  workspaceDirty: boolean;
+  setWorkspaceInfo: (name: string | null, path: string | null) => void;
+  markWorkspaceDirty: () => void;
+  markWorkspaceClean: () => void;
+  hydrateFromWorkspace: (data: {
+    nodes: SwarmNode[];
+    agents: Agent[];
+    crossSpeakLinks: CrossSpeakLink[];
+    settings: SwarmSettings;
+    workspaceName: string;
+    workspacePath: string;
+    currentView: "welcome" | "orchestrator" | "settings";
+  }) => void;
+
   // Actions - UI
   selectNode: (id: string | null) => void;
   selectAgent: (id: string | null) => void;
@@ -120,7 +156,10 @@ interface AppState {
   setSidebarView: (view: "nodes" | "activity") => void;
   toggleRightDrawer: () => void;
   openRightDrawer: () => void;
-  setCurrentView: (view: "welcome" | "orchestrator") => void;
+  toggleConciergeSidebar: () => void;
+  openConciergeSidebar: () => void;
+  closeConciergeSidebar: () => void;
+  setCurrentView: (view: "welcome" | "orchestrator" | "settings") => void;
   setPanelView: (view: "chat" | "swarm" | "diff" | "info") => void;
   setBrokerStatus: (status: Partial<BrokerStatus>) => void;
 }
@@ -153,7 +192,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   connections: [],
   crossSpeakLinks: [],
   broker: { connected: false, peerCount: 0, nodeCount: 0, url: "ws://127.0.0.1:7899" },
-  settings: { autoSendMessages: true },
+  settings: { autoSendMessages: true, nickname: "" },
 
   currentView: "welcome",
   selectedNodeId: null,
@@ -163,11 +202,54 @@ export const useAppStore = create<AppState>((set, get) => ({
   sidebarView: "nodes",
   rightDrawerOpen: false,
   panelView: "chat",
+  conciergeSidebarOpen: false,
   nodeNotifications: {},
   activityLog: [],
   activityFeedOpen: false,
   dragging: null,
   connectionMenu: null,
+
+  // Permission prompts
+  pendingPermissions: [],
+
+  addPermission: (prompt) =>
+    set((s) => ({
+      // One active prompt per agent — new prompt replaces the old one
+      pendingPermissions: [
+        ...s.pendingPermissions.filter((p) => p.agentId !== prompt.agentId),
+        prompt,
+      ],
+    })),
+
+  removePermission: (id) =>
+    set((s) => ({
+      pendingPermissions: s.pendingPermissions.filter((p) => p.id !== id),
+    })),
+
+  clearPermissionsForAgent: (agentId) =>
+    set((s) => ({
+      pendingPermissions: s.pendingPermissions.filter((p) => p.agentId !== agentId),
+    })),
+
+  // Concierge
+  conciergeStatus: "off",
+  conciergeMessages: [],
+
+  setConciergeStatus: (status) => set({ conciergeStatus: status }),
+
+  addConciergeMessage: (msg) =>
+    set((s) => ({
+      conciergeMessages: [
+        ...s.conciergeMessages,
+        {
+          ...msg,
+          id: Math.random().toString(36).slice(2, 10),
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    })),
+
+  clearConciergeMessages: () => set({ conciergeMessages: [] }),
 
   updateSettings: (patch) => set((s) => ({ settings: { ...s.settings, ...patch } })),
 
@@ -224,12 +306,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       nodes: s.nodes.map((n) => (n.id === id ? { ...n, position: pos } : n)),
     })),
 
-  addAgent: (nodeId, name, cwd, role) => {
+  addAgent: (nodeId, name, cwd, role, id) => {
     const state = get();
     const node = state.nodes.find((n) => n.id === nodeId);
+    const resolvedId = id ?? genId();
+
+    // Idempotency: if an agent with this ID already exists, return it
+    const existing = state.agents.find((a) => a.id === resolvedId);
+    if (existing) return existing;
+
     const resolvedRole = role ?? "worker";
     const agent: Agent = {
-      id: genId(),
+      id: resolvedId,
       peerId: null,
       nodeId,
       name,
@@ -242,6 +330,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       diff: null,
       diffs: [],
       config: defaultAgentConfig(resolvedRole),
+      sessionId: null,
       createdAt: new Date().toISOString(),
       lastSeen: new Date().toISOString(),
     };
@@ -290,6 +379,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   updateAgentPid: (id, pid) =>
     set((s) => ({
       agents: s.agents.map((a) => (a.id === id ? { ...a, pid } : a)),
+    })),
+
+  updateAgentSessionId: (id, sessionId) =>
+    set((s) => ({
+      agents: s.agents.map((a) => (a.id === id ? { ...a, sessionId } : a)),
     })),
 
   addAgentMessage: (agentId, message) => {
@@ -468,7 +562,39 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSidebarView: (view) => set({ sidebarView: view }),
   toggleRightDrawer: () => set((s) => ({ rightDrawerOpen: !s.rightDrawerOpen })),
   openRightDrawer: () => set({ rightDrawerOpen: true }),
+  toggleConciergeSidebar: () => set((s) => ({ conciergeSidebarOpen: !s.conciergeSidebarOpen })),
+  openConciergeSidebar: () => set({ conciergeSidebarOpen: true }),
+  closeConciergeSidebar: () => set({ conciergeSidebarOpen: false }),
   setPanelView: (view) => set({ panelView: view }),
   setBrokerStatus: (status) =>
     set((s) => ({ broker: { ...s.broker, ...status } })),
+
+  // Workspace persistence
+  currentWorkspaceName: null,
+  currentWorkspacePath: null,
+  workspaceDirty: false,
+
+  setWorkspaceInfo: (name, path) =>
+    set({ currentWorkspaceName: name, currentWorkspacePath: path }),
+
+  markWorkspaceDirty: () => set({ workspaceDirty: true }),
+  markWorkspaceClean: () => set({ workspaceDirty: false }),
+
+  hydrateFromWorkspace: (data) =>
+    set({
+      nodes: data.nodes,
+      agents: data.agents,
+      crossSpeakLinks: data.crossSpeakLinks,
+      settings: data.settings,
+      connections: [],
+      activityLog: [],
+      pendingPermissions: [],
+      selectedNodeId: null,
+      selectedAgentId: null,
+      showDiffFor: null,
+      currentView: data.currentView,
+      currentWorkspaceName: data.workspaceName,
+      currentWorkspacePath: data.workspacePath,
+      workspaceDirty: false,
+    }),
 }));

@@ -22,6 +22,8 @@ import {
   pollMessages,
 } from "./broker";
 import { useAppStore } from "../stores/appStore";
+import { PermissionDetector } from "./permissionDetector";
+import { pushConciergeContext } from "./conciergeContextProvider";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +48,7 @@ interface RunningAgent {
   unlistenExit: UnlistenFn | null;
   alive: boolean;
   identityInjected: boolean;
+  permissionDetector: PermissionDetector | null;
 }
 
 const runningAgents = new Map<string, RunningAgent>();
@@ -62,6 +65,195 @@ const READY_MAX_WAIT_MS = 60_000;
 // Swarm prompt builder
 // ---------------------------------------------------------------------------
 
+/** Build the peer roster section (shared by both roles). */
+function buildPeerRoster(
+  nodeId: string,
+  excludeName: string,
+  excludePeerId: string,
+): string {
+  const store = useAppStore.getState();
+  const peerAgents = store.agents.filter(
+    (a) => a.nodeId === nodeId && a.id !== excludeName && a.peerId && a.peerId !== excludePeerId
+  );
+
+  if (peerAgents.length === 0) {
+    return "  (no other agents yet — you will be notified when peers join)";
+  }
+  return peerAgents
+    .map((a) => `  - "${a.name}" (${a.role}) → peer ID: ${a.peerId}`)
+    .join("\n");
+}
+
+/** System prompt for the lead/boss agent of a node. */
+function buildBossPrompt(
+  name: string,
+  peerId: string,
+  nodeId: string,
+  nodeName: string,
+  cwd: string,
+  peerList: string,
+): string {
+  // IMPORTANT: This prompt is passed as a CLI argument via --append-system-prompt.
+  // On Windows with cmd.exe shims, special characters are interpreted by the shell.
+  // Keep this plain text — no backticks, no pipe tables, no markdown bold/headers.
+  // The content IS the system prompt — Claude will follow these instructions.
+  return [
+    `You are "${name}", the lead agent of the "${nodeName}" swarm node inside Omniforge, a desktop AI-agent orchestration platform.`,
+    `You are a fully autonomous Claude Code session running in a pseudo-terminal managed by the Omniforge UI.`,
+    `You do NOT need to explore Omniforge source code or understand its infrastructure. Everything you need is described here.`,
+    ``,
+    `IDENTITY`,
+    `  Agent name: ${name}`,
+    `  Role: lead`,
+    `  Peer ID: ${peerId}`,
+    `  Node: "${nodeName}" (ID: ${nodeId})`,
+    `  Working directory: ${cwd}`,
+    ``,
+    `ENVIRONMENT`,
+    `You have full access to the standard Claude Code tools: Read, Edit, Write, Bash, Glob, Grep, and the internal Agent tool.`,
+    `Use the dedicated tools rather than shell equivalents (Read not cat, Edit not sed, Grep not grep, Glob not find).`,
+    `Use Bash for commands that need a shell: build, test, install, git, and curl for swarm communication.`,
+    ``,
+    `SWARM COMMUNICATION`,
+    `You communicate with peer agents through a broker at ${BROKER_URL} using curl from the Bash tool.`,
+    `Always use escaped double quotes in the JSON payload (never single quotes, they break on Windows).`,
+    ``,
+    `Send a message to a peer:`,
+    `  curl -s -X POST ${BROKER_URL}/send-message -H "Content-Type: application/json" -d "{\\"from_id\\":\\"${peerId}\\",\\"to_id\\":\\"THEIR_PEER_ID\\",\\"text\\":\\"your message\\"}"`,
+    ``,
+    `Broadcast to all peers in your node:`,
+    `  curl -s -X POST ${BROKER_URL}/broadcast -H "Content-Type: application/json" -d "{\\"from_id\\":\\"${peerId}\\",\\"node_id\\":\\"${nodeId}\\",\\"text\\":\\"your message\\"}"`,
+    ``,
+    `List all active peers:`,
+    `  curl -s ${BROKER_URL}/peers`,
+    ``,
+    `Incoming messages from peers are delivered directly into this session. You do not need to poll.`,
+    ``,
+    `Current peers in your node:`,
+    peerList,
+    ``,
+    `SPAWNING SWARM AGENTS`,
+    `This is your most important capability. You can spawn new Claude Code sessions as swarm agents using a single curl command.`,
+    `This is NOT the same as your built-in Agent tool. The Agent tool creates sub-agents inside your own session.`,
+    `Swarm spawning creates independent, persistent Claude Code sessions that appear as separate terminals in the Omniforge UI.`,
+    `Each spawned agent gets its own system prompt, its own tools, and the ability to message you and other peers.`,
+    `The orchestrator handles all setup automatically. You just issue the curl command.`,
+    ``,
+    `Spawn a new swarm agent:`,
+    `  curl -s -X POST ${BROKER_URL}/spawn-agent -H "Content-Type: application/json" -d "{\\"node_id\\":\\"${nodeId}\\",\\"name\\":\\"AGENT_NAME\\",\\"task\\":\\"TASK_DESCRIPTION\\",\\"requester_peer_id\\":\\"${peerId}\\",\\"model\\":\\"MODEL\\"}"`,
+    ``,
+    `Parameters:`,
+    `  name - Descriptive kebab-case name (e.g. "api-routes", "ui-forms", "test-writer")`,
+    `  task - What the agent should do. Include all context it needs.`,
+    `  model - "sonnet" (default, use for most tasks), "opus" (complex reasoning), or "haiku" (trivial tasks)`,
+    `  requester_peer_id - Always use "${peerId}" (your own peer ID)`,
+    `  node_id - Always use "${nodeId}" (this node)`,
+    ``,
+    `Spawn rules:`,
+    `  Each name must be unique. Never reuse a name you already spawned.`,
+    `  Each spawned agent is a full independent Claude Code session in the same working directory.`,
+    `  Agents automatically know how to message you back. You do not need to teach them communication.`,
+    ``,
+    `TASK EXECUTION STRATEGY`,
+    `When you receive a task, choose the right approach:`,
+    ``,
+    `Simple tasks (single fix, small change, quick question):`,
+    `  Do it yourself directly. No need to spawn agents.`,
+    ``,
+    `Complex tasks (multiple independent features, broad audit):`,
+    `  Break into independent sub-tasks and spawn a swarm agent for each.`,
+    ``,
+    `Agent management requests (e.g. "spawn 2 agents", "create a team", "set up agents to stand by"):`,
+    `  This is a direct infrastructure command. Execute the spawn curl commands immediately.`,
+    `  Do NOT explore the codebase, analyze the project, or think about what agents might do.`,
+    `  Just spawn them. For stand-by agents, set their task to: "Await instructions from the lead agent."`,
+    ``,
+    `COORDINATION`,
+    `After spawning agents for a complex task:`,
+    `  Wait for exactly N "COMPLETED:" messages (one per agent) before proceeding.`,
+    `  Do not begin summaries or edits until all agents report back.`,
+    `  While waiting, you may check status: curl -s ${BROKER_URL}/peers`,
+    `  If an agent is slow, message it asking for a status update.`,
+    ``,
+    `BEHAVIOR`,
+    `Be direct and action-oriented. Execute immediately when the task is clear.`,
+    `Do not over-analyze or explore the codebase unless the task specifically requires understanding unfamiliar code.`,
+  ].join("\n");
+}
+
+/** System prompt for a worker/sub-agent within a node. */
+function buildWorkerPrompt(
+  name: string,
+  peerId: string,
+  nodeId: string,
+  nodeName: string,
+  cwd: string,
+  peerList: string,
+): string {
+  // IMPORTANT: Same shell-safety rules as buildBossPrompt — plain text only.
+  return [
+    `You are "${name}", a worker agent in the "${nodeName}" swarm node inside Omniforge, a desktop AI-agent orchestration platform.`,
+    `You are a fully autonomous Claude Code session running in a pseudo-terminal managed by the Omniforge UI.`,
+    `You were spawned to handle a specific task. You do NOT need to explore Omniforge source code or understand its infrastructure.`,
+    ``,
+    `IDENTITY`,
+    `  Agent name: ${name}`,
+    `  Role: worker`,
+    `  Peer ID: ${peerId}`,
+    `  Node: "${nodeName}" (ID: ${nodeId})`,
+    `  Working directory: ${cwd}`,
+    ``,
+    `ENVIRONMENT`,
+    `You have full access to the standard Claude Code tools: Read, Edit, Write, Bash, Glob, Grep, and the internal Agent tool.`,
+    `Use the dedicated tools rather than shell equivalents (Read not cat, Edit not sed, Grep not grep, Glob not find).`,
+    `Use Bash for commands that need a shell: build, test, install, git, and curl for swarm communication.`,
+    ``,
+    `SWARM COMMUNICATION`,
+    `You communicate with peer agents through a broker at ${BROKER_URL} using curl from the Bash tool.`,
+    `Always use escaped double quotes in the JSON payload (never single quotes, they break on Windows).`,
+    ``,
+    `Send a message to a peer:`,
+    `  curl -s -X POST ${BROKER_URL}/send-message -H "Content-Type: application/json" -d "{\\"from_id\\":\\"${peerId}\\",\\"to_id\\":\\"THEIR_PEER_ID\\",\\"text\\":\\"your message\\"}"`,
+    ``,
+    `Broadcast to all peers in your node:`,
+    `  curl -s -X POST ${BROKER_URL}/broadcast -H "Content-Type: application/json" -d "{\\"from_id\\":\\"${peerId}\\",\\"node_id\\":\\"${nodeId}\\",\\"text\\":\\"your message\\"}"`,
+    ``,
+    `List all active peers:`,
+    `  curl -s ${BROKER_URL}/peers`,
+    ``,
+    `Incoming messages from peers are delivered directly into this session. You do not need to poll.`,
+    ``,
+    `Current peers in your node:`,
+    peerList,
+    ``,
+    `TASK EXECUTION`,
+    `You were spawned to complete a specific task. Follow these rules:`,
+    ``,
+    `1. Focus on your assigned task. Do not take on work outside your scope.`,
+    `   If you discover something outside your scope, message the lead agent about it.`,
+    ``,
+    `2. Execute directly. Your task description contains everything you need.`,
+    `   Start working immediately. Do not explore the codebase for general "context"`,
+    `   unless your task specifically requires understanding unfamiliar code.`,
+    ``,
+    `3. Use the right tools. Read files before editing. Use Grep and Glob to find what you need.`,
+    `   Use Bash for builds, tests, and git operations.`,
+    ``,
+    `4. Report completion. When done, send a message to the lead agent (or broadcast)`,
+    `   starting with "COMPLETED:" followed by a concise summary of what you did.`,
+    ``,
+    `5. Report blockers. If something prevents you from completing your task,`,
+    `   message the lead agent with "BLOCKED:" followed by the issue.`,
+    ``,
+    `6. Stay available. After completing your task, remain available for follow-up messages.`,
+    `   If you receive a new instruction from the lead agent, execute it.`,
+    ``,
+    `BEHAVIOR`,
+    `Be direct and action-oriented. Execute immediately when the task is clear.`,
+    `Keep messages to peers concise. State facts and results, not process narration.`,
+  ].join("\n");
+}
+
 function buildSwarmIdentityPrompt(
   name: string,
   peerId: string,
@@ -70,77 +262,14 @@ function buildSwarmIdentityPrompt(
 ): string {
   const store = useAppStore.getState();
   const node = store.nodes.find((n) => n.id === nodeId);
-
-  // Gather peer agents in the same node
-  const peerAgents = store.agents.filter(
-    (a) => a.nodeId === nodeId && a.id !== name && a.peerId && a.peerId !== peerId
-  );
-
-  let peerList = "";
-  if (peerAgents.length === 0) {
-    peerList = "  (no other agents yet — you'll be notified when peers join)";
-  } else {
-    for (const a of peerAgents) {
-      peerList += `  - "${a.name}" (${a.role}) → peer ID: ${a.peerId}\n`;
-    }
-  }
-
-  let prompt = `You are agent "${name}" in the "${node?.name ?? "unknown"}" swarm node.
-Your peer ID is: ${peerId}
-Broker URL: ${BROKER_URL}
-
-PEERS IN YOUR NODE:
-${peerList}
-
-COMMUNICATION — use your Bash tool with curl to talk to peers.
-IMPORTANT: Always use escaped double quotes in the -d payload (never single quotes — they break on Windows):
-
-Send a message to a peer:
-  curl -s -X POST ${BROKER_URL}/send-message -H "Content-Type: application/json" -d "{\\"from_id\\":\\"${peerId}\\",\\"to_id\\":\\"THEIR_PEER_ID\\",\\"text\\":\\"your message\\"}"
-
-List all active peers:
-  curl -s ${BROKER_URL}/peers
-
-You will receive incoming messages directly in this session. Coordinate with your peers on shared tasks.`;
+  const nodeName = node?.name ?? "unknown";
+  const cwd = node?.directory ?? ".";
+  const peerList = buildPeerRoster(nodeId, name, peerId);
 
   if (role === "boss") {
-    prompt += `
-
-YOU ARE THE LEAD AGENT for this node. Assess the task and decide the best approach:
-
-IF THE TASK IS SIMPLE (single file fix, small change, quick question, one focused concern):
-- Just do it yourself directly. No need to spawn sub-agents.
-
-IF THE TASK IS COMPLEX (multiple independent features, broad audit, cross-cutting concerns):
-- Break it into independent sub-tasks and spawn a dedicated agent for each one.
-
-SPAWN SUB-AGENTS using your Bash tool (use escaped double quotes, never single quotes):
-  curl -s -X POST ${BROKER_URL}/spawn-agent -H "Content-Type: application/json" -d "{\\"node_id\\":\\"${nodeId}\\",\\"name\\":\\"AGENT_NAME\\",\\"task\\":\\"SPECIFIC_SUB_TASK\\",\\"requester_peer_id\\":\\"${peerId}\\",\\"model\\":\\"MODEL\\"}"
-
-MODEL OPTIONS — use "sonnet" as default for most sub-tasks:
-- "sonnet" — PREFERRED DEFAULT. Fast, capable, cost-efficient. Use for most sub-tasks.
-- "opus" — Only for highly complex architectural or reasoning-heavy sub-tasks.
-- "haiku" — For trivial mechanical tasks (formatting, simple grep, boilerplate).
-
-SPAWN RULES (only when spawning):
-- Use descriptive kebab-case names (e.g. "api-routes", "ui-forms", "test-writer")
-- Each sub-task should be self-contained and parallelizable
-- Only spawn as many agents as there are truly independent sub-tasks
-- Each spawned agent is a full independent Claude Code session working in this directory
-- Sub-agents will automatically know how to message you back
-- NEVER send a spawn request for an agent name you already spawned — each name must be unique
-- NEVER tell sub-agents to "stand by" or "wait" — they are idle by default after completing
-
-CRITICAL COORDINATION RULES:
-- After spawning N agents, you MUST wait for exactly N "COMPLETED:" messages before doing ANYTHING else
-- Do NOT begin writing summaries, reports, or making edits until ALL N agents have reported back
-- Do NOT assume an agent is done just because it was spawned — wait for its explicit "COMPLETED:" message
-- While waiting, you may periodically check status: curl -s ${BROKER_URL}/peers
-- If an agent hasn't reported after a long time, send it a message asking for a status update
-- Only after receiving ALL N completion reports, synthesize results into your final summary`;
+    return buildBossPrompt(name, peerId, nodeId, nodeName, cwd, peerList);
   }
-
-  return prompt;
+  return buildWorkerPrompt(name, peerId, nodeId, nodeName, cwd, peerList);
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +306,7 @@ export async function spawnAgent(
     unlistenExit: null,
     alive: true,
     identityInjected: false,
+    permissionDetector: new PermissionDetector(agentId),
   };
 
   runningAgents.set(agentId, entry);
@@ -212,6 +342,12 @@ export async function spawnAgent(
       ? buildSwarmIdentityPrompt(name, peerId, nodeId, role)
       : undefined;
 
+    if (!systemPrompt) {
+      console.warn(`[agent:${name}] WARNING: No system prompt built — peerId=${peerId}. Agent will not have swarm capabilities.`);
+    } else {
+      console.log(`[agent:${name}] System prompt built (${systemPrompt.length} chars, role=${role})`);
+    }
+
     // Build the custom system prompt by combining swarm identity + user custom instructions
     let fullSystemPrompt = systemPrompt ?? null;
     if (config?.customSystemPrompt && fullSystemPrompt) {
@@ -219,6 +355,9 @@ export async function spawnAgent(
     } else if (config?.customSystemPrompt) {
       fullSystemPrompt = config.customSystemPrompt;
     }
+
+    // Generate a stable session ID so we can --resume this agent later
+    const sessionId = crypto.randomUUID();
 
     const pid = await invoke<number>("spawn_pty", {
       id: agentId,
@@ -231,11 +370,16 @@ export async function spawnAgent(
       maxTurns: config?.maxTurns ?? null,
       allowedTools: config?.allowedTools?.length ? config.allowedTools : null,
       disallowedTools: config?.disallowedTools?.length ? config.disallowedTools : null,
+      envVars: null,
+      sessionId,
+      resumeSessionId: null,
     });
 
     entry.pid = pid;
     store.updateAgentStatus(agentId, "active");
     store.updateAgentPid(agentId, pid);
+    store.updateAgentSessionId(agentId, sessionId);
+    pushConciergeContext();
 
     // 3. Buffer PTY output for replay on tab switch.
     //    Also detect when Claude Code is "ready" (output silence) to inject the task.
@@ -249,6 +393,9 @@ export async function spawnAgent(
       // Context is already in the system prompt. Now just inject the task.
       injectTask(entry, taskPrompt);
     };
+
+    // Debounced prompt detection — only detect after output settles
+    let promptDetectTimer: ReturnType<typeof setTimeout> | null = null;
 
     entry.unlistenOutput = await listen<string>(
       `pty-output-${agentId}`,
@@ -264,6 +411,23 @@ export async function spawnAgent(
         if (!readyFired) {
           if (readyTimer) clearTimeout(readyTimer);
           readyTimer = setTimeout(fireWhenReady, READY_SILENCE_MS);
+        }
+
+        // Feed chunk to detector buffer (accumulates), but debounce detection
+        if (entry.permissionDetector) {
+          entry.permissionDetector.feed(event.payload);
+          if (promptDetectTimer) clearTimeout(promptDetectTimer);
+          promptDetectTimer = setTimeout(() => {
+            if (!entry.alive || !entry.permissionDetector) return;
+            const prompt = entry.permissionDetector.detect();
+            if (prompt) {
+              const agentState = useAppStore.getState().agents.find((a) => a.id === agentId);
+              useAppStore.getState().addPermission({
+                ...prompt,
+                agentName: agentState?.name ?? name,
+              });
+            }
+          }, 800);
         }
       }
     );
@@ -317,6 +481,180 @@ export async function spawnAgent(
 }
 
 /**
+ * Spawn a lightweight Claude Code PTY for the welcome-screen chat.
+ * No broker registration, no swarm identity, no node required.
+ * Output is buffered so XtermPanel can replay on mount.
+ * Returns the PID on success.
+ */
+export async function spawnChatAgent(
+  agentId: string,
+  cwd: string,
+  taskPrompt?: string,
+  model?: string,
+  systemPrompt?: string,
+  envVars?: Record<string, string>,
+  initialCols?: number,
+  initialRows?: number,
+): Promise<number> {
+  const entry: RunningAgent = {
+    agentId,
+    peerId: null,
+    nodeId: "__chat__",
+    name: "claude",
+    cwd,
+    role: "worker",
+    pid: 0,
+    heartbeatTimer: null,
+    pollTimer: null,
+    outputBuffer: [],
+    outputChunkCount: 0,
+    unlistenOutput: null,
+    unlistenExit: null,
+    alive: true,
+    identityInjected: false,
+    permissionDetector: new PermissionDetector(agentId),
+  };
+
+  runningAgents.set(agentId, entry);
+
+  const sessionId = crypto.randomUUID();
+
+  const pid = await invoke<number>("spawn_pty", {
+    id: agentId,
+    cwd,
+    cols: initialCols ?? 120,
+    rows: initialRows ?? 30,
+    model: model || undefined,
+    systemPrompt: systemPrompt ?? null,
+    permissionMode: "auto",
+    maxTurns: null,
+    allowedTools: null,
+    disallowedTools: null,
+    envVars: envVars ?? null,
+    sessionId,
+    resumeSessionId: null,
+  });
+
+  entry.pid = pid;
+
+  // Update the store (chat agents are now tracked in the Zustand store)
+  useAppStore.getState().updateAgentStatus(agentId, "active");
+  useAppStore.getState().updateAgentPid(agentId, pid);
+  useAppStore.getState().updateAgentSessionId(agentId, sessionId);
+
+  // Buffer output + silence-based ready detection
+  let readyTimer: ReturnType<typeof setTimeout> | null = null;
+  let readyFired = false;
+  let chatPromptDetectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const fireWhenReady = () => {
+    if (readyFired || !entry.alive) return;
+    readyFired = true;
+    if (readyTimer) clearTimeout(readyTimer);
+    if (taskPrompt) {
+      entry.identityInjected = true;
+      const line = taskPrompt.replace(/\n+/g, " ").replace(/\s{2,}/g, " ").trim();
+      writeToPty(agentId, line + "\r").catch(() => {});
+    }
+  };
+
+  entry.unlistenOutput = await listen<string>(
+    `pty-output-${agentId}`,
+    (event) => {
+      entry.outputBuffer.push(event.payload);
+      entry.outputChunkCount++;
+      let total = entry.outputBuffer.reduce((s, c) => s + c.length, 0);
+      while (total > MAX_BUFFER_BYTES && entry.outputBuffer.length > 1) {
+        total -= entry.outputBuffer.shift()!.length;
+      }
+      if (!readyFired) {
+        if (readyTimer) clearTimeout(readyTimer);
+        readyTimer = setTimeout(fireWhenReady, READY_SILENCE_MS);
+      }
+
+      // Feed chunk to detector buffer, debounce actual detection
+      if (entry.permissionDetector) {
+        entry.permissionDetector.feed(event.payload);
+        if (chatPromptDetectTimer) clearTimeout(chatPromptDetectTimer);
+        chatPromptDetectTimer = setTimeout(() => {
+          if (!entry.alive || !entry.permissionDetector) return;
+          const prompt = entry.permissionDetector.detect();
+          if (prompt) {
+            useAppStore.getState().addPermission({
+              ...prompt,
+              agentName: entry.name,
+            });
+          }
+        }, 800);
+      }
+    }
+  );
+
+  setTimeout(() => {
+    if (!readyFired && entry.alive) fireWhenReady();
+  }, READY_MAX_WAIT_MS);
+
+  entry.unlistenExit = await listen(`pty-exit-${agentId}`, () => {
+    entry.alive = false;
+    useAppStore.getState().updateAgentStatus(agentId, "stopped");
+    cleanupAgent(agentId);
+  });
+
+  return pid;
+}
+
+/**
+ * Adopt an already-running lightweight chat agent into the full swarm system.
+ * Creates broker registration, heartbeat, and polling. Used when promoting
+ * a welcome-screen chat session to a node boss.
+ */
+export async function adoptAgent(
+  agentId: string,
+  nodeId: string,
+  name: string,
+  role: AgentRole = "boss",
+): Promise<void> {
+  const entry = runningAgents.get(agentId);
+  if (!entry || !entry.alive) return;
+
+  entry.nodeId = nodeId;
+  entry.name = name;
+  entry.role = role;
+
+  // Register with broker
+  try {
+    const reg = await registerPeer({
+      pid: entry.pid,
+      cwd: entry.cwd,
+      git_root: null,
+      tty: null,
+      summary: `Agent "${name}" — promoted to ${role}`,
+      node_id: nodeId,
+    });
+    entry.peerId = reg.id;
+    useAppStore.getState().updateAgentPeerId(agentId, reg.id);
+  } catch (err) {
+    console.warn(`[adopt:${name}] broker registration failed:`, err);
+  }
+
+  // Start heartbeat + polling
+  if (entry.peerId) {
+    entry.heartbeatTimer = setInterval(() => {
+      if (entry.peerId) heartbeat(entry.peerId).catch(() => {});
+    }, 15_000);
+
+    entry.identityInjected = true;
+    entry.pollTimer = setInterval(() => {
+      if (entry.alive && entry.peerId && entry.identityInjected) {
+        pollAndDeliverMessages(entry).catch(() => {});
+      }
+    }, POLL_INTERVAL);
+
+    notifyPeersOfNewAgent(nodeId, name, entry.peerId).catch(() => {});
+  }
+}
+
+/**
  * Write data to an agent's PTY stdin and press Enter to submit.
  * Collapses newlines to spaces (newlines act as Enter in the PTY).
  */
@@ -354,6 +692,189 @@ export async function killAgent(agentId: string): Promise<void> {
 
   cleanupAgent(agentId);
   useAppStore.getState().updateAgentStatus(agentId, "stopped");
+  pushConciergeContext();
+}
+
+/**
+ * Resume a previously-saved agent by spawning a PTY with --resume <sessionId>.
+ * Claude Code picks up the prior conversation. No task injection needed.
+ */
+export async function resumeAgent(
+  agentId: string,
+  nodeId: string,
+  name: string,
+  cwd: string,
+  sessionId: string,
+  role: AgentRole = "worker",
+  model?: string,
+): Promise<void> {
+  const store = useAppStore.getState();
+
+  const entry: RunningAgent = {
+    agentId,
+    peerId: null,
+    nodeId,
+    name,
+    cwd,
+    role,
+    pid: 0,
+    heartbeatTimer: null,
+    pollTimer: null,
+    outputBuffer: [],
+    outputChunkCount: 0,
+    unlistenOutput: null,
+    unlistenExit: null,
+    alive: true,
+    identityInjected: true, // session already has context
+    permissionDetector: new PermissionDetector(agentId),
+  };
+
+  runningAgents.set(agentId, entry);
+
+  try {
+    const agentState = store.agents.find((a) => a.id === agentId);
+    const config = agentState?.config;
+    const resolvedModel = model ?? config?.model ?? undefined;
+
+    // Register with broker (new peerId)
+    let peerId: string | null = null;
+    try {
+      const reg = await registerPeer({
+        pid: 0,
+        cwd,
+        git_root: null,
+        tty: null,
+        summary: `Agent "${name}" — resumed`,
+        node_id: nodeId,
+      });
+      peerId = reg.id;
+      entry.peerId = peerId;
+      store.updateAgentPeerId(agentId, peerId);
+    } catch (err) {
+      console.warn(`[resume:${name}] broker registration failed:`, err);
+    }
+
+    // Build system prompt with new peerId for swarm communication
+    const systemPrompt = peerId
+      ? buildSwarmIdentityPrompt(name, peerId, nodeId, role)
+      : undefined;
+
+    let fullSystemPrompt = systemPrompt ?? null;
+    if (config?.customSystemPrompt && fullSystemPrompt) {
+      fullSystemPrompt += "\n\n" + config.customSystemPrompt;
+    } else if (config?.customSystemPrompt) {
+      fullSystemPrompt = config.customSystemPrompt;
+    }
+
+    const pid = await invoke<number>("spawn_pty", {
+      id: agentId,
+      cwd,
+      cols: 80,
+      rows: 24,
+      model: resolvedModel,
+      systemPrompt: fullSystemPrompt,
+      permissionMode: config?.permissionMode ?? "auto",
+      maxTurns: config?.maxTurns ?? null,
+      allowedTools: config?.allowedTools?.length ? config.allowedTools : null,
+      disallowedTools: config?.disallowedTools?.length ? config.disallowedTools : null,
+      envVars: null,
+      sessionId: null,
+      resumeSessionId: sessionId,
+    });
+
+    entry.pid = pid;
+    store.updateAgentStatus(agentId, "active");
+    store.updateAgentPid(agentId, pid);
+    pushConciergeContext();
+
+    // Buffer output + permission detection (no task injection — session already has context)
+    let promptDetectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    entry.unlistenOutput = await listen<string>(
+      `pty-output-${agentId}`,
+      (event) => {
+        entry.outputBuffer.push(event.payload);
+        entry.outputChunkCount++;
+        let total = entry.outputBuffer.reduce((s, c) => s + c.length, 0);
+        while (total > MAX_BUFFER_BYTES && entry.outputBuffer.length > 1) {
+          total -= entry.outputBuffer.shift()!.length;
+        }
+
+        if (entry.permissionDetector) {
+          entry.permissionDetector.feed(event.payload);
+          if (promptDetectTimer) clearTimeout(promptDetectTimer);
+          promptDetectTimer = setTimeout(() => {
+            if (!entry.alive || !entry.permissionDetector) return;
+            const prompt = entry.permissionDetector.detect();
+            if (prompt) {
+              useAppStore.getState().addPermission({
+                ...prompt,
+                agentName: name,
+              });
+            }
+          }, 800);
+        }
+      }
+    );
+
+    entry.unlistenExit = await listen(`pty-exit-${agentId}`, () => {
+      if (entry.alive) {
+        useAppStore.getState().updateAgentStatus(agentId, "stopped");
+        useAppStore.getState().pushActivity({
+          type: "agent_stop",
+          agentId,
+          agentName: name,
+          nodeId,
+          text: `Agent "${name}" session ended`,
+        });
+      }
+      cleanupAgent(agentId);
+    });
+
+    if (peerId) {
+      entry.heartbeatTimer = setInterval(() => {
+        if (entry.peerId) heartbeat(entry.peerId).catch(() => {});
+      }, 15_000);
+
+      entry.pollTimer = setInterval(() => {
+        if (entry.alive && entry.peerId && entry.identityInjected) {
+          pollAndDeliverMessages(entry).catch(() => {});
+        }
+      }, POLL_INTERVAL);
+
+      notifyPeersOfNewAgent(nodeId, name, peerId).catch(() => {});
+    }
+
+    store.pushActivity({
+      type: "agent_spawn",
+      agentId,
+      agentName: name,
+      nodeId,
+      text: `Agent "${name}" resumed from saved session`,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[resume:${name}] failed:`, msg);
+    store.updateAgentStatus(agentId, "error");
+    store.updateAgentSummary(agentId, `Resume failed: ${msg}`);
+    runningAgents.delete(agentId);
+    throw err;
+  }
+}
+
+/**
+ * Resume all suspended agents that have a stored session ID.
+ */
+export async function resumeAllAgents(): Promise<void> {
+  const store = useAppStore.getState();
+  const suspended = store.agents.filter(
+    (a) => a.status === "suspended" && a.sessionId
+  );
+  await Promise.all(
+    suspended.map((a) =>
+      resumeAgent(a.id, a.nodeId, a.name, a.cwd, a.sessionId!, a.role, a.config.model)
+    )
+  );
 }
 
 /** Get the buffered PTY output for replaying into a fresh xterm.js instance. */
@@ -443,6 +964,49 @@ export function getCleanOutputSince(agentId: string, sinceCounter: number): stri
     if (fallback) return fallback;
   }
   return cleaned;
+}
+
+/**
+ * Respond to a permission prompt (y/n) detected in an agent's PTY output.
+ */
+export async function respondToPermission(
+  agentId: string,
+  permissionId: string,
+  allow: boolean,
+): Promise<void> {
+  const entry = runningAgents.get(agentId);
+  if (!entry || !entry.alive) return;
+
+  await writeToPty(agentId, allow ? "y" : "n");
+  entry.permissionDetector?.reset();
+  useAppStore.getState().removePermission(permissionId);
+}
+
+/**
+ * Respond to an AskUserQuestion multi-choice prompt by selecting an option.
+ * The optionIndex is the 1-based number as shown in the terminal menu.
+ * The menu starts at option 1 — we send (index-1) arrow-downs then Enter.
+ * Small delays between keystrokes ensure the TUI processes each one.
+ */
+export async function respondToQuestion(
+  agentId: string,
+  permissionId: string,
+  optionIndex: number,
+): Promise<void> {
+  const entry = runningAgents.get(agentId);
+  if (!entry || !entry.alive) return;
+
+  const arrowDowns = optionIndex - 1;
+  for (let i = 0; i < arrowDowns; i++) {
+    await writeToPty(agentId, "\x1b[B"); // ESC [ B = arrow down
+    // Small delay to let the TUI process each keystroke
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  await new Promise((r) => setTimeout(r, 50));
+  await writeToPty(agentId, "\r"); // Enter to select
+
+  entry.permissionDetector?.reset();
+  useAppStore.getState().removePermission(permissionId);
 }
 
 /**
@@ -568,6 +1132,30 @@ async function pollAndDeliverMessages(entry: RunningAgent): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Bulk cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * Kill all agents belonging to a specific node.
+ * Call this before removing a node to avoid orphaned PTY processes.
+ */
+export async function killAgentsForNode(nodeId: string): Promise<void> {
+  const agentIds = [...runningAgents.entries()]
+    .filter(([, entry]) => entry.nodeId === nodeId)
+    .map(([id]) => id);
+
+  await Promise.all(agentIds.map((id) => killAgent(id)));
+}
+
+/**
+ * Kill every running agent. Used on app shutdown to prevent orphaned processes.
+ */
+export async function killAllAgents(): Promise<void> {
+  const agentIds = [...runningAgents.keys()];
+  await Promise.all(agentIds.map((id) => killAgent(id)));
+}
+
+// ---------------------------------------------------------------------------
 // Internal — cleanup
 // ---------------------------------------------------------------------------
 
@@ -578,5 +1166,6 @@ function cleanupAgent(agentId: string) {
   if (entry.pollTimer) clearInterval(entry.pollTimer);
   if (entry.unlistenOutput) entry.unlistenOutput();
   if (entry.unlistenExit) entry.unlistenExit();
+  useAppStore.getState().clearPermissionsForAgent(agentId);
   runningAgents.delete(agentId);
 }

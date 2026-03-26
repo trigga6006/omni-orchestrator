@@ -5,8 +5,12 @@ import { sendMessage as brokerSendMessage } from "@/lib/broker";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { ArrowUp, ChevronDown, FolderOpen, Globe, X, Loader2 } from "lucide-react";
-import { AgentIcon, getNodeIcon } from "@/lib/utils";
+import { ArrowUp, ChevronDown, FolderOpen, Globe, X, Loader2, Sparkles } from "lucide-react";
+import { getNodeIcon } from "@/lib/utils";
+import PixelAvatar from "@/components/PixelAvatar";
+import { requestRewrite } from "@/lib/concierge";
+import { cleanPtyOutput } from "@/lib/ptyClean";
+import PermissionBanner from "@/components/PermissionBanner";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                                */
@@ -21,87 +25,6 @@ const MAX_PANELS = 4;
 const STALE_MS = 3000; // output unchanged for this long → "done streaming"
 
 /* ------------------------------------------------------------------ */
-/* Inline PTY output cleaner (no dependency on agentManager internals) */
-/* ------------------------------------------------------------------ */
-
-function cleanPtyOutput(raw: string): string {
-  // 1. BEFORE stripping ANSI, convert cursor-movement sequences into spaces.
-  //    This preserves word boundaries that would otherwise be lost.
-  let text = raw
-    .replace(/\x1b\[\d*C/g, " ")       // cursor forward → space
-    .replace(/\x1b\[\d*G/g, " ")       // cursor to absolute column → space
-    .replace(/\x1b\[\d+;\d+[Hf]/g, "\n"); // cursor to row;col → newline
-
-  // 2. Strip remaining ANSI escape sequences and control chars
-  text = text
-    .replace(/\x1b\[[?]?[0-9;]*[a-zA-Z]/g, "")
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b[()][AB012]/g, "")
-    .replace(/\x1b[78]/g, "")
-    .replace(/\x1b[>=]/g, "")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
-
-  // 3. Collapse runs of spaces into a single space
-  text = text.replace(/ {2,}/g, " ");
-
-  // 4. Resolve carriage returns (keep last visible segment per line)
-  const lines = text.split("\n").map((line) => {
-    if (!line.includes("\r")) return line.trimEnd();
-    const segments = line.split("\r");
-    for (let i = segments.length - 1; i >= 0; i--) {
-      if (segments[i].length > 0) return segments[i].trimEnd();
-    }
-    return "";
-  });
-
-  // 5. Strip Claude Code's input box and permission notices.
-  const result: string[] = [];
-  for (const rawLine of lines) {
-    let line = rawLine.replace(/^\s*❯\s*/, "").trimEnd();
-    if (!line) continue;
-
-    // Strip leading/trailing box-drawing chars from each line
-    line = line.replace(/^[\u2500-\u257F─━→←]+\s*/, "")
-               .replace(/\s*[\u2500-\u257F─━→←]+$/, "")
-               .trimEnd();
-    if (!line) continue;
-
-    const t = line.trim();
-
-    // Strip: lines that are ONLY box-drawing / separator chars
-    const withoutBox = t.replace(/[\u2500-\u257F─━→←]/g, "").trim();
-    if (withoutBox.length === 0 && t.length > 2) continue;
-
-    // Strip: bare ">" prompt
-    if (/^>\s*$/.test(t)) continue;
-
-    // Strip: "bypass permissions on (shift+tab...)" notices
-    if (/bypass\s*permissions/i.test(t)) continue;
-    if (/shift\+tab/i.test(t)) continue;
-
-    // Strip: spinner animation garbage — short fragments from TUI cursor overwrites
-    // e.g. "· d", "Wa dl", "✢ d n", "* in …" — no real word of 4+ letters
-    if (t.length < 15 && !/[a-zA-Z]{4,}/.test(t)) continue;
-
-    result.push(line);
-  }
-
-  // Deduplicate: terminal resize redraws repeat the entire content.
-  // Detect by finding the same [Message from ...] line appearing twice.
-  const firstMsgIdx = result.findIndex((l) => l.startsWith("[Message from"));
-  if (firstMsgIdx >= 0) {
-    const msgLine = result[firstMsgIdx];
-    const lastMsgIdx = result.lastIndexOf(msgLine);
-    if (lastMsgIdx > firstMsgIdx) {
-      // Same message line appears again — take from the last occurrence
-      return result.slice(lastMsgIdx).join("\n").trim();
-    }
-  }
-
-  return result.join("\n").trim();
-}
-
-/* ------------------------------------------------------------------ */
 /* PromptBar                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -110,9 +33,12 @@ export default function PromptBar() {
   const agents = useAppStore((s) => s.agents);
   const addAgentMessage = useAppStore((s) => s.addAgentMessage);
 
+  const conciergeStatus = useAppStore((s) => s.conciergeStatus);
+
   const [input, setInput] = useState("");
   const [target, setTarget] = useState<Target>({ type: "broadcast" });
   const [targetOpen, setTargetOpen] = useState(false);
+  const [isRewriting, setIsRewriting] = useState(false);
   const [panels, setPanels] = useState<{ agentId: string; resumeSignal: number }[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -218,6 +144,17 @@ export default function PromptBar() {
     }
   }, [input, target, nodes, agents, addAgentMessage, addPanel]);
 
+  const handleRewrite = useCallback(async () => {
+    if (!input.trim() || isRewriting || conciergeStatus !== "ready") return;
+    setIsRewriting(true);
+    try {
+      const rewritten = await requestRewrite(input.trim());
+      setInput(rewritten);
+    } finally {
+      setIsRewriting(false);
+    }
+  }, [input, isRewriting, conciergeStatus]);
+
   // ---------- Derived ----------
 
   const targetLabel =
@@ -232,7 +169,10 @@ export default function PromptBar() {
       ? Globe
       : target.type === "node"
         ? FolderOpen
-        : AgentIcon;
+        : null; // agent targets use PixelAvatar instead
+
+  const targetAgent = target.type === "agent" ? agents.find((a) => a.id === target.id) : null;
+  const targetAgentNode = targetAgent ? nodes.find((n) => n.id === targetAgent.nodeId) : null;
 
   const selectedAgentId = target.type === "agent" ? target.id : null;
 
@@ -240,6 +180,9 @@ export default function PromptBar() {
   return (
     <div className="shrink-0 px-4 pb-3 pt-1.5">
       <div className="max-w-[960px] mx-auto">
+        {/* Permission prompts */}
+        <PermissionBanner />
+
         {/* Response preview panels — horizontal row */}
         {panels.length > 0 && (
           <div className="flex gap-2 mb-2 overflow-x-auto scrollbar-thin pb-1">
@@ -283,7 +226,7 @@ export default function PromptBar() {
             placeholder="Message your agents..."
             rows={1}
             className={cn(
-              "w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[13px] leading-relaxed",
+              "w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-relaxed",
               "text-foreground placeholder:text-muted-foreground/40",
               "focus:outline-none",
               "scrollbar-thin"
@@ -299,7 +242,7 @@ export default function PromptBar() {
                 onClick={() => setTargetOpen((v) => !v)}
                 className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
               >
-                <TargetIcon className="w-3 h-3" />
+                {TargetIcon ? <TargetIcon className="w-3 h-3" /> : <PixelAvatar color={targetAgentNode?.color ?? "#8b5cf6"} size={12} active={targetAgent?.status === "active"} />}
                 <span>{targetLabel}</span>
                 <ChevronDown className={cn("w-3 h-3 opacity-50 transition-transform", targetOpen && "rotate-180")} />
               </button>
@@ -348,47 +291,73 @@ export default function PromptBar() {
                       </p>
                       {agents
                         .filter((a) => a.status === "active" || a.status === "idle")
-                        .map((agent) => (
-                          <TargetOption
-                            key={agent.id}
-                            icon={AgentIcon}
-                            label={agent.name}
-                            sublabel={
-                              nodes.find((n) => n.id === agent.nodeId)?.name ?? ""
-                            }
-                            selected={
-                              target.type === "agent" && target.id === agent.id
-                            }
-                            onClick={() => {
-                              setTarget({
-                                type: "agent",
-                                id: agent.id,
-                                name: agent.name,
-                              });
-                              setTargetOpen(false);
-                            }}
-                          />
-                        ))}
+                        .map((agent) => {
+                          const agentNode = nodes.find((n) => n.id === agent.nodeId);
+                          return (
+                            <TargetOption
+                              key={agent.id}
+                              avatar={<PixelAvatar color={agentNode?.color ?? "#8b5cf6"} size={14} active={agent.status === "active"} />}
+                              label={agent.name}
+                              sublabel={agentNode?.name ?? ""}
+                              selected={
+                                target.type === "agent" && target.id === agent.id
+                              }
+                              onClick={() => {
+                                setTarget({
+                                  type: "agent",
+                                  id: agent.id,
+                                  name: agent.name,
+                                });
+                                setTargetOpen(false);
+                              }}
+                            />
+                          );
+                        })}
                     </div>
                   )}
                 </div>
               )}
             </div>
 
-            {/* Send button */}
-            <Button
-              size="sm"
-              className={cn(
-                "h-7 w-7 p-0 rounded-lg transition-all",
-                input.trim()
-                  ? "bg-foreground text-background hover:bg-foreground/90"
-                  : "bg-secondary text-muted-foreground cursor-not-allowed"
+            <div className="flex items-center gap-1 shrink-0">
+              {/* Rewrite with Concierge */}
+              {input.trim() && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    "h-7 w-7 p-0 transition-all",
+                    conciergeStatus === "ready"
+                      ? "text-violet/60 hover:text-violet hover:bg-violet/10"
+                      : "text-violet/25 bg-secondary/30 cursor-not-allowed"
+                  )}
+                  onClick={handleRewrite}
+                  disabled={isRewriting || conciergeStatus !== "ready"}
+                  title={conciergeStatus === "ready" ? "Rewrite with Concierge" : "Concierge is not ready"}
+                >
+                  {isRewriting ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-3 h-3" />
+                  )}
+                </Button>
               )}
-              onClick={handleSend}
-              disabled={!input.trim()}
-            >
-              <ArrowUp className="w-3.5 h-3.5" />
-            </Button>
+
+              {/* Send button */}
+              <Button
+                size="sm"
+                className={cn(
+                  "h-7 w-7 p-0 rounded-lg transition-all",
+                  input.trim()
+                    ? "bg-foreground text-background hover:bg-foreground/90"
+                    : "bg-secondary text-muted-foreground cursor-not-allowed"
+                )}
+                onClick={handleSend}
+                disabled={!input.trim()}
+              >
+                <ArrowUp className="w-3.5 h-3.5" />
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -411,13 +380,14 @@ function ResponsePreview({
   panelCount,
 }: {
   agentId: string;
-  agent: { id: string; name: string; status: string };
+  agent: { id: string; name: string; status: string; nodeId: string };
   resumeSignal: number;
   isSelected: boolean;
   onSelect: () => void;
   onDismiss: () => void;
   panelCount: number;
 }) {
+  const agentNode = useAppStore((s) => s.nodes.find((n) => n.id === agent.nodeId));
   const scrollRef = useRef<HTMLDivElement>(null);
   const chunksRef = useRef<string[]>([]);
   const lastCleanedRef = useRef("");
@@ -534,7 +504,7 @@ function ResponsePreview({
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-1 border-b border-border/40 bg-secondary/30 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
-          <AgentIcon className="w-3 h-3 text-muted-foreground shrink-0" />
+          <PixelAvatar color={agentNode?.color ?? "#8b5cf6"} size={12} active={agent.status === "active"} />
           <span className="text-[11px] font-medium text-foreground/80 truncate">
             {agent.name}
           </span>
@@ -587,12 +557,14 @@ function ResponsePreview({
 
 function TargetOption({
   icon: Icon,
+  avatar,
   label,
   sublabel,
   selected,
   onClick,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
+  icon?: React.ComponentType<{ className?: string }>;
+  avatar?: React.ReactNode;
   label: string;
   sublabel: string;
   selected: boolean;
@@ -609,7 +581,7 @@ function TargetOption({
       )}
     >
       <div className="w-5 h-5 rounded-md bg-secondary/80 flex items-center justify-center shrink-0">
-        <Icon className="w-3 h-3" />
+        {avatar ?? (Icon && <Icon className="w-3 h-3" />)}
       </div>
       <div className="min-w-0 flex-1">
         <p className="text-[12px] font-medium truncate">{label}</p>

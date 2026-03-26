@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capability set for Claude Swarm",
+  "description": "Default capability set for Omniforge",
   "windows": ["main"],
   "permissions": [
     "core:default",

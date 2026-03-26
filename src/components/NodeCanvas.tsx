@@ -3,7 +3,8 @@ import { useAppStore } from "@/stores/appStore";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { FolderOpen, Link2, GripHorizontal, Unlink, Bell } from "lucide-react";
-import { AgentIcon, getNodeIcon } from "@/lib/utils";
+import { getNodeIcon } from "@/lib/utils";
+import PixelAvatar from "@/components/PixelAvatar";
 import type { SwarmNode, Agent, CrossSpeakLink } from "@/types";
 
 const NODE_WIDTH = 220;
@@ -511,17 +512,7 @@ function NodeCard({
                   key={agent.id}
                   className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
                 >
-                  <span
-                    className={cn(
-                      "w-1.5 h-1.5 rounded-full shrink-0",
-                      status === "active" && "bg-emerald animate-pulse-dot",
-                      status === "starting" && "bg-amber",
-                      status === "idle" && "bg-sky",
-                      status === "error" && "bg-rose",
-                      status === "stopped" && "bg-muted-foreground/50"
-                    )}
-                  />
-                  <AgentIcon className="w-3 h-3 shrink-0 opacity-50" />
+                  <PixelAvatar color={node.color} size={10} active={status === "active"} />
                   <span className="truncate">{agent.name}</span>
                 </div>
               );

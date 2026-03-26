@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicholasrice/tauri/refs/heads/v2-schema/packages/tauri-cli/schema.json",
-  "productName": "Claude Swarm",
+  "productName": "Omniforge",
   "version": "0.1.0",
-  "identifier": "com.claude-swarm.app",
+  "identifier": "com.omniforge.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1430",
@@ -10,19 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Claude Swarm",
-        "width": 1400,
-        "height": 900,
-        "minWidth": 1000,
-        "minHeight": 700,
-        "decorations": false,
-        "transparent": false,
-        "resizable": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

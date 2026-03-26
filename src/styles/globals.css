@@ -132,6 +132,8 @@
 
   html {
     @apply font-sans;
+    text-rendering: optimizeLegibility;
+    -webkit-text-size-adjust: 100%;
   }
 
   html,
@@ -142,6 +144,27 @@
     overflow: hidden;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Force GPU compositing for crisper rendering in WebView2 */
+  #root {
+    transform: translateZ(0);
+  }
+
+  /* Ensure SVG icons render at full resolution */
+  svg {
+    shape-rendering: geometricPrecision;
+  }
+
+  /* Crisp pixel-art canvases — prevent browser smoothing */
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+
+  /* Ensure small icons and images aren't blurred by upscaling */
+  img {
+    image-rendering: -webkit-optimize-contrast;
   }
 
   body {
@@ -225,6 +248,11 @@
 @keyframes connection-pulse {
   0%, 100% { stroke-opacity: 0.3; }
   50% { stroke-opacity: 0.8; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .animate-pulse-dot {

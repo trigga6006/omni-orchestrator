@@ -42,7 +42,8 @@ import {
   Check,
   Ban,
 } from "lucide-react";
-import { AgentIcon, getNodeIcon } from "@/lib/utils";
+import { getNodeIcon } from "@/lib/utils";
+import PixelAvatar from "@/components/PixelAvatar";
 import type { AgentStatus, AgentModel, PermissionMode, AgentConfig } from "@/types";
 
 /* ================================================================== */
@@ -109,6 +110,7 @@ const STATUS_STYLE: Record<AgentStatus, { bg: string; text: string; label: strin
   idle: { bg: "bg-sky/10", text: "text-sky", label: "Idle" },
   error: { bg: "bg-rose/10", text: "text-rose", label: "Error" },
   stopped: { bg: "bg-muted", text: "text-muted-foreground", label: "Stopped" },
+  suspended: { bg: "bg-violet/10", text: "text-violet", label: "Suspended" },
 };
 
 export default function RightDrawer() {
@@ -131,7 +133,7 @@ export default function RightDrawer() {
       <div className="h-10 flex items-center justify-between px-3 border-b border-border shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           {agent ? (
-            <AgentIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+            <PixelAvatar color={node?.color ?? "#8b5cf6"} size={14} active={agent.status === "active"} />
           ) : (
             <FolderOpen className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
           )}
@@ -685,14 +687,7 @@ function NodeInfoPanel() {
                     onClick={() => selectAgent(agent.id)}
                     className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left hover:bg-secondary/50 transition-colors group"
                   >
-                    <span
-                      className={cn(
-                        "w-1.5 h-1.5 rounded-full shrink-0",
-                        st.bg.replace("/10", ""),
-                        agent.status === "active" && "animate-pulse-dot"
-                      )}
-                    />
-                    <AgentIcon className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <PixelAvatar color={node?.color ?? "#8b5cf6"} size={10} active={agent.status === "active"} />
                     <span className="text-[12px] text-foreground/80 truncate flex-1">
                       {agent.name}
                     </span>
@@ -780,7 +775,8 @@ function SwarmPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Collect swarm messages: [SWARM], [Message from], [From] across relevant agents
-  const swarmMessages: { agentName: string; msg: { id: string; text: string; sentAt: string; direction: string } }[] = [];
+  const nodes = useAppStore((s) => s.nodes);
+  const swarmMessages: { agentName: string; agentColor: string; agentStatus: string; msg: { id: string; text: string; sentAt: string; direction: string } }[] = [];
 
   const relevantAgents = selectedAgentId
     ? allAgents.filter((a) => a.id === selectedAgentId)
@@ -797,7 +793,8 @@ function SwarmPanel() {
         msg.text.startsWith("[From") ||
         msg.text.includes("COMPLETED:")
       ) {
-        swarmMessages.push({ agentName: agent.name, msg });
+        const agentNode = nodes.find((n) => n.id === agent.nodeId);
+        swarmMessages.push({ agentName: agent.name, agentColor: agentNode?.color ?? "#8b5cf6", agentStatus: agent.status, msg });
       }
     }
   }
@@ -828,7 +825,7 @@ function SwarmPanel() {
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin">
       <div className="p-3 space-y-1.5">
-        {swarmMessages.map(({ agentName, msg }, i) => {
+        {swarmMessages.map(({ agentName, agentColor, agentStatus, msg }, i) => {
           const isInbound = msg.direction === "inbound";
           const isSystem = msg.text.startsWith("[SWARM]");
           const isCompletion = msg.text.includes("COMPLETED:");
@@ -848,7 +845,7 @@ function SwarmPanel() {
               )}
             >
               <div className="flex items-center gap-1.5 mb-0.5">
-                <AgentIcon className="w-2.5 h-2.5 shrink-0 opacity-50" />
+                <PixelAvatar color={agentColor} size={10} active={agentStatus === "active"} />
                 <span className="font-medium text-[10px] opacity-70">{agentName}</span>
                 <span className="text-[9px] opacity-40 ml-auto">
                   {new Date(msg.sentAt).toLocaleTimeString()}
